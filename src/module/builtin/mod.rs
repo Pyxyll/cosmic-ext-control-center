@@ -225,8 +225,11 @@ pub(crate) fn slider_tile<'a>(
 
     // 2col+: a single inline row — icon, slider (fills), then the percentage.
     let s: Element<'a, Message> = if edit {
-        widget::container(widget::progress_bar::determinate_linear(value))
+        // Width/girth must go on the Linear itself; it defaults to a fixed 100px
+        // width + thin girth, and a container wrapper does NOT stretch it.
+        widget::progress_bar::determinate_linear(value)
             .width(Length::Fill)
+            .girth(Length::Fixed(6.0))
             .into()
     } else {
         widget::slider(0.0..=1.0, value, on_change)

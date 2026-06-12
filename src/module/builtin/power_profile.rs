@@ -68,7 +68,9 @@ impl PowerProfileModule {
             desc: ModuleDescriptor {
                 id: "builtin.power_profile".into(),
                 name: "Power Profile".into(),
-                icon: "power-profile-balanced-symbolic".into(),
+                // battery-profile-* exists across themes (Breeze/Papirus);
+                // power-profile-* is Adwaita-only and renders blank elsewhere.
+                icon: "battery-profile-balanced-symbolic".into(),
                 size: TileSize::Medium,
                 resizable: true,
             },
