@@ -65,21 +65,22 @@ It describes a tile and a list of controls, each bound to shell commands:
 
 ```ron
 Manifest(
-  id: "dylan.fan", name: "Case Fan", icon: "weather-windy-symbolic", size: Large,
+  id: "demo.echo", name: "Echo Demo", icon: "utilities-terminal-symbolic", size: Large,
   controls: [
-    Slider(id:"speed", label:"Speed", min:0.0, max:100.0,
-           get: Cmd("fanctl get-speed"), set: Cmd("fanctl set-speed {value}"), poll: 5.0),
-    Toggle(id:"auto", label:"Auto curve", get: Cmd("fanctl is-auto"), set: Cmd("fanctl set-auto {value}")),
-    Label(id:"rpm", label:"RPM", get: Cmd("fanctl rpm"), poll: 2.0),
-    Button(id:"reset", label:"Reset", run: Cmd("fanctl reset")),
+    Label(id:"clock", label:"Clock", get: Cmd("date +%H:%M:%S"), poll: 1.0),
+    Slider(id:"level", label:"Level", min:0.0, max:100.0,
+           set: Cmd("echo level={value} >> /tmp/ccc-demo.log")),
+    Toggle(id:"flag", label:"Flag", set: Cmd("notify-send 'Echo Demo' 'flag = {value}'")),
+    Button(id:"ping", label:"Ping", run: Cmd("notify-send 'Echo Demo' 'ping'")),
   ],
 )
 ```
 
 The control types are `Slider`, `Toggle`, `Label`, and `Button`. `get` reads
 state, `set` and `run` act (with `{value}` substituted), and `poll` (in seconds)
-re-reads `get`. See [`examples/`](examples/) for a runnable demo
-(`echo-demo.ron`) and a template (`fan.ron`).
+re-reads `get`. The manifest above is [`examples/echo-demo.ron`](examples/echo-demo.ron):
+drop it into the plugins directory and add it from the editor to see all four
+control types working.
 
 Security note: plugin commands run with your privileges via `sh -c`. Only
 install manifests you trust, the same as you would a shell script or an AUR
