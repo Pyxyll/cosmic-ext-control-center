@@ -27,20 +27,36 @@ out, restart, shut down).
 
 ## Install
 
+### Arch (AUR)
+
+```sh
+paru -S cosmic-control-center        # or your preferred AUR helper
+```
+
+### Debian and Fedora (prebuilt)
+
+Download the `.deb` or `.rpm` from the
+[latest release](https://github.com/Pyxyll/cosmic-control-center/releases/latest)
+and install it with your package manager. A static-binary `.tar.gz` is also
+attached for other distributions.
+
+### From source
+
 Needs the Rust toolchain and [`just`](https://github.com/casey/just).
 
 ```sh
 git clone https://github.com/Pyxyll/cosmic-control-center
 cd cosmic-control-center
-sudo just install        # builds release and installs to /usr
+sudo just install                    # builds release and installs to /usr
 ```
 
-Then, in a COSMIC session, add the applet to your panel:
-Settings > Desktop > Panel (or Dock) > Add applet > Control Center.
-Click the panel icon to open the popup. The gear opens the editor, which also
-shows up in your app launcher as "Control Center".
-
 Uninstall with `sudo just uninstall`.
+
+### Add the applet to your panel
+
+In a COSMIC session, go to Settings > Desktop > Panel (or Dock) > Add applet >
+Control Center. Click the panel icon to open the popup. The gear opens the
+editor, which also shows up in your app launcher as "Control Center".
 
 ## Plugins
 
