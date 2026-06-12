@@ -1,0 +1,844 @@
+//! The hub shell: holds the placed module instances, renders them as
+//! draggable tiles in a reflowing grid, and routes interactions. Layout
+//! changes (add / remove / reorder) persist to cosmic-config immediately.
+
+use crate::config::{Config, InstanceConfig};
+use crate::module::manifest::{Manifest, ManifestModule};
+use crate::module::{
+    ControlValue, GRID_GAP, GRID_UNIT, InstanceId, Module, ModuleDescriptor, TileSize, ValueAnim,
+    builtin,
+};
+use crate::plugins;
+use crate::theme;
+use cosmic::app::{Core, Task};
+use cosmic::iced::{Alignment, Length, Subscription, time};
+use cosmic::prelude::*;
+use cosmic::widget;
+use std::time::Duration;
+
+/// A live, placed tile. The hub owns the per-instance `size` (so the same
+/// module type can be Normal in one spot and Wide in another).
+struct Instance {
+    id: InstanceId,
+    module: Box<dyn Module>,
+    size: TileSize,
+    /// Animated tile width (px) — eases when `size` changes for a smooth resize,
+    /// and drives the add (0→natural) / remove (natural→0) reveal.
+    width: ValueAnim,
+    /// Set when the tile is animating out; once its width hits 0 the hub frees
+    /// it (see the `Frame` handler). Kept in the vec until then so the exit plays.
+    removing: bool,
+}
+
+/// The full control-center UI + state, independent of how it's hosted. Both the
+/// window app (`App`, the editor) and the panel applet (`Applet`, display +
+/// interact only) embed a `Hub` and delegate `view`/`update`/`subscription` to
+/// it. `allow_edit` gates the editing chrome: the window sets it true; the
+/// applet sets it false and its gear launches the editor instead of toggling.
+pub struct Hub {
+    config: Config,
+    /// Manifests discovered from the plugin dirs, for the palette + factory.
+    plugins: Vec<Manifest>,
+    instances: Vec<Instance>,
+    edit: bool,
+    /// Whether this host permits editing (the window app: yes; the applet: no).
+    allow_edit: bool,
+    palette_open: bool,
+    /// A destructive power action awaiting confirmation.
+    pending_power: Option<PowerAction>,
+    /// Latest battery reading (percent, charging?), refreshed on poll. `None`
+    /// on desktops with no battery — the readout is simply hidden.
+    battery: Option<(u8, bool)>,
+    /// Force frame ticks until this instant. A layout-changing toggle (edit /
+    /// palette) only triggers one redraw, but with a multi-buffered Vulkan
+    /// swapchain an older buffer (still showing the edit chrome) can be
+    /// re-presented; a short redraw burst refreshes every buffer so no ghost
+    /// of the previous layout lingers.
+    redraw_until: Option<std::time::Instant>,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    ToggleEdit,
+    OpenPalette,
+    AddModule(String),
+    RemoveInstance(InstanceId),
+    /// Cycle a tile's size (Normal ↔ Wide) in edit mode.
+    ResizeInstance(InstanceId),
+    Reordered(Vec<InstanceId>),
+    /// A module control changed: (instance, control id, new value).
+    Control(InstanceId, String, ControlValue),
+    /// Async state arrived for a module (reserved for async polling).
+    StateLoaded(InstanceId, String, ControlValue),
+    /// Periodic tick — refresh polled module state (e.g. manifest `get`s).
+    Poll,
+    /// ~60fps tick while a module is animating (drives the redraw; no-op state).
+    Frame,
+    /// A power/session action was pressed (may need confirmation first).
+    Power(PowerAction),
+    /// Confirm the pending destructive power action.
+    PowerConfirm,
+    /// Dismiss the pending power action.
+    PowerCancel,
+    /// Launch the companion config app (the applet's gear, when editing is off).
+    OpenConfig,
+    /// (applet) Layer-shell surface plumbing for the panel popup.
+    Surface(cosmic::surface::Action),
+    /// (applet) The popup window was closed.
+    PopupClosed(cosmic::iced::window::Id),
+}
+
+/// Session/power actions in the always-present footer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PowerAction {
+    Lock,
+    Sleep,
+    Logout,
+    Restart,
+    Shutdown,
+}
+
+impl PowerAction {
+    fn icon(self) -> &'static str {
+        match self {
+            PowerAction::Lock => "system-lock-screen-symbolic",
+            PowerAction::Sleep => "system-suspend-symbolic",
+            PowerAction::Logout => "system-log-out-symbolic",
+            PowerAction::Restart => "system-reboot-symbolic",
+            PowerAction::Shutdown => "system-shutdown-symbolic",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PowerAction::Lock => "Lock",
+            PowerAction::Sleep => "Sleep",
+            PowerAction::Logout => "Log Out",
+            PowerAction::Restart => "Restart",
+            PowerAction::Shutdown => "Shut Down",
+        }
+    }
+
+    /// Lock/Sleep are reversible → run immediately. The rest lose work → confirm.
+    fn needs_confirm(self) -> bool {
+        matches!(
+            self,
+            PowerAction::Logout | PowerAction::Restart | PowerAction::Shutdown
+        )
+    }
+
+    fn run(self) {
+        let cmd = match self {
+            PowerAction::Lock => "loginctl lock-session",
+            PowerAction::Sleep => "systemctl suspend",
+            PowerAction::Logout => "loginctl terminate-session \"$XDG_SESSION_ID\"",
+            PowerAction::Restart => "systemctl reboot",
+            PowerAction::Shutdown => "systemctl poweroff",
+        };
+        let _ = std::process::Command::new("sh").arg("-c").arg(cmd).spawn();
+    }
+}
+
+impl Hub {
+    /// Build a module by id from either the built-in registry or a discovered
+    /// plugin manifest. The hub treats both identically.
+    fn make(&self, module_id: &str) -> Option<Box<dyn Module>> {
+        if let Some(m) = builtin::make(module_id) {
+            return Some(m);
+        }
+        self.plugins
+            .iter()
+            .find(|m| m.id == module_id)
+            .map(|m| Box::new(ManifestModule::from_manifest(m)) as Box<dyn Module>)
+    }
+
+    /// All addable module types: built-ins + discovered plugins.
+    fn available(&self) -> Vec<ModuleDescriptor> {
+        let mut descs = builtin::descriptors();
+        descs.extend(self.plugins.iter().map(|m| m.descriptor()));
+        descs
+    }
+
+    /// Instantiate a module by id and append it as a new tile.
+    fn add_module(&mut self, module_id: &str) {
+        if let Some(m) = self.make(module_id) {
+            let id = self.config.next_id;
+            self.config.next_id += 1;
+            let size = m.descriptor().size;
+            // Start at 0 width and ease out to the natural width — the tile
+            // grows into place and neighbours reflow around it.
+            let mut width = ValueAnim::new(0.0);
+            width.set(size.width());
+            self.instances.push(Instance {
+                id,
+                module: m,
+                size,
+                width,
+                removing: false,
+            });
+            self.persist();
+        }
+    }
+
+    /// Rebuild live instances from saved config (on startup).
+    fn build_instances(&mut self) {
+        for c in self.config.instances.clone() {
+            if let Some(m) = self.make(&c.module) {
+                // Clamp a saved size up to the module's minimum span.
+                let mut size = c.size;
+                while size.cols() < m.min_cols() {
+                    size = size.toggled();
+                }
+                self.instances.push(Instance {
+                    id: c.id,
+                    module: m,
+                    size,
+                    width: ValueAnim::new(size.width()),
+                    removing: false,
+                });
+            }
+        }
+    }
+
+    /// Mirror the current instance list (order + sizes) into config + save.
+    fn persist(&mut self) {
+        self.config.instances = self
+            .instances
+            .iter()
+            .filter(|i| !i.removing)
+            .map(|i| InstanceConfig {
+                id: i.id,
+                module: i.module.descriptor().id.clone(),
+                size: i.size,
+            })
+            .collect();
+        self.config.save();
+    }
+
+    fn reorder(&mut self, order: Vec<InstanceId>) {
+        let mut reordered = Vec::with_capacity(self.instances.len());
+        for id in &order {
+            if let Some(pos) = self.instances.iter().position(|i| i.id == *id) {
+                reordered.push(self.instances.remove(pos));
+            }
+        }
+        reordered.extend(self.instances.drain(..)); // keep any not named
+        self.instances = reordered;
+        self.persist();
+    }
+
+    /// Edit-mode ruler: the four grid columns, numbered, so the user can see
+    /// the column rhythm tiles snap to. Same total width as a Full tile.
+    fn grid_ruler<'a>() -> Element<'a, Message> {
+        let mut row = widget::Row::new().spacing(GRID_GAP);
+        for i in 0..4 {
+            row = row.push(
+                widget::container(widget::text::caption(format!("{}", i + 1)))
+                    .width(Length::Fixed(GRID_UNIT))
+                    .height(Length::Fixed(22.0))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill)
+                    .class(theme::card(false, theme::ACCENTS[0].1)),
+            );
+        }
+        row.into()
+    }
+
+    /// Always-present session/power controls at the bottom of the hub. Shows a
+    /// confirm prompt for destructive actions.
+    /// The top bar: power actions split to the edges (Lock + Log Out left;
+    /// Sleep, Restart, Shut Down right) with the edit controls centered. When a
+    /// destructive action is pending it becomes an inline confirm prompt.
+    fn power_bar(&self) -> Element<'_, Message> {
+        if let Some(a) = self.pending_power {
+            return widget::Row::new()
+                .spacing(8)
+                .align_y(Alignment::Center)
+                .push(widget::text::body(format!("{}?", a.label())))
+                .push(widget::space::horizontal())
+                .push(widget::button::suggested("Confirm").on_press(Message::PowerConfirm))
+                .push(widget::button::standard("Cancel").on_press(Message::PowerCancel))
+                .into();
+        }
+
+        let pbtn = |a: PowerAction| {
+            widget::button::icon(widget::icon::from_name(a.icon()).size(20))
+                .on_press(Message::Power(a))
+        };
+        let left = widget::Row::new()
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .push(pbtn(PowerAction::Lock))
+            .push(pbtn(PowerAction::Logout));
+        let right = widget::Row::new()
+            .spacing(6)
+            .align_y(Alignment::Center)
+            .push(pbtn(PowerAction::Sleep))
+            .push(pbtn(PowerAction::Restart))
+            .push(pbtn(PowerAction::Shutdown));
+
+        widget::Row::new()
+            .align_y(Alignment::Center)
+            .push(left)
+            .push(widget::space::horizontal())
+            .push(right)
+            .into()
+    }
+
+    /// The bottom bar: battery readout (left, hidden on batteryless machines) and
+    /// a settings/gear button (right) that currently doubles as the edit toggle.
+    /// `＋ Add` joins it on the right while editing, grouping the edit controls.
+    fn bottom_bar(&self) -> Element<'_, Message> {
+        let left: Element<'_, Message> = match self.battery {
+            Some((pct, charging)) => widget::Row::new()
+                .spacing(6)
+                .align_y(Alignment::Center)
+                .push(widget::icon::from_name(battery_icon(pct, charging)).size(18))
+                .push(widget::text::body(format!("{pct}%")))
+                .into(),
+            None => widget::Row::new().into(),
+        };
+
+        let mut right = widget::Row::new().spacing(8).align_y(Alignment::Center);
+        if self.edit {
+            right = right.push(widget::button::standard("＋ Add").on_press(Message::OpenPalette));
+        }
+        // The gear toggles edit in the editor; in the applet (no editing) it
+        // launches the companion editor window instead.
+        let gear_msg = if self.allow_edit {
+            Message::ToggleEdit
+        } else {
+            Message::OpenConfig
+        };
+        right = right.push(
+            widget::button::icon(widget::icon::from_name("emblem-system-symbolic").size(20))
+                .on_press(gear_msg),
+        );
+
+        widget::Column::new()
+            .spacing(10)
+            .push(widget::divider::horizontal::default())
+            .push(
+                widget::Row::new()
+                    .align_y(Alignment::Center)
+                    .push(left)
+                    .push(widget::space::horizontal())
+                    .push(right),
+            )
+            .into()
+    }
+
+    /// The add-module picker, shown as a centered modal card (see
+    /// `palette_overlay`) instead of being appended to the bottom of the page.
+    fn palette(&self) -> Element<'_, Message> {
+        let header = widget::Row::new()
+            .align_y(Alignment::Center)
+            .push(widget::text::title4("Add a module"))
+            .push(widget::space::horizontal())
+            .push(round_btn("window-close-symbolic", Message::OpenPalette));
+
+        // Module choices as a wrapping grid of icon+label cards, echoing the
+        // tile grid itself.
+        let mut grid = widget::Row::new().spacing(8);
+        for d in self.available() {
+            grid = grid.push(palette_item(&d.icon, &d.name, Message::AddModule(d.id.clone())));
+        }
+
+        let card = widget::Column::new()
+            .spacing(14)
+            .push(header)
+            .push(grid.wrap());
+        widget::container(card)
+            .padding(16)
+            .width(Length::Fill)
+            .class(theme::card(false, theme::ACCENTS[0].1))
+            .into()
+    }
+}
+
+/// A single choice in the add-module palette: a tile-like button with the
+/// module's icon above its name.
+fn palette_item<'a>(icon: &str, name: &str, msg: Message) -> Element<'a, Message> {
+    let content = widget::Column::new()
+        .spacing(8)
+        .align_x(Alignment::Center)
+        .push(widget::icon::from_name(icon).size(28))
+        .push(widget::text::body(name.to_string()));
+    let style = |bg: f32| {
+        move |_focused: bool, t: &cosmic::Theme| {
+            // Foreground from the theme so the glyph/label stay legible in light
+            // mode (white-on-light was invisible).
+            let fg: cosmic::iced::Color = t.cosmic().background.on.into();
+            let mut s = cosmic::widget::button::Style::new();
+            s.background = Some(cosmic::iced::Background::Color(theme::alpha(fg, bg)));
+            s.border_radius = 12.0.into();
+            s.icon_color = Some(fg);
+            s.text_color = Some(fg);
+            s
+        }
+    };
+    widget::button::custom(content)
+        .width(Length::Fixed(96.0))
+        .height(Length::Fixed(96.0))
+        .padding(10)
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(style(0.07)),
+            disabled: Box::new(move |t| style(0.04)(false, t)),
+            hovered: Box::new(style(0.16)),
+            pressed: Box::new(style(0.22)),
+        })
+        .on_press(msg)
+        .into()
+}
+
+/// A full-width row in the editor sidebar: icon + module name, tap to add.
+fn sidebar_item<'a>(icon: &str, name: &str, msg: Message) -> Element<'a, Message> {
+    let content = widget::Row::new()
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .push(widget::icon::from_name(icon).size(18))
+        .push(widget::text::body(name.to_string()));
+    let style = |bg: f32| {
+        move |_focused: bool, t: &cosmic::Theme| {
+            let fg: cosmic::iced::Color = t.cosmic().background.on.into();
+            let mut s = cosmic::widget::button::Style::new();
+            s.background = Some(cosmic::iced::Background::Color(theme::alpha(fg, bg)));
+            s.border_radius = 8.0.into();
+            s.icon_color = Some(fg);
+            s.text_color = Some(fg);
+            s
+        }
+    };
+    widget::button::custom(content)
+        .width(Length::Fill)
+        .padding([8, 10])
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(style(0.0)),
+            disabled: Box::new(move |t| style(0.0)(false, t)),
+            hovered: Box::new(style(0.10)),
+            pressed: Box::new(style(0.16)),
+        })
+        .on_press(msg)
+        .into()
+}
+
+impl Hub {
+    /// Build the hub. `allow_edit` is the editor (window) vs display-only
+    /// (applet) distinction; only the editor seeds a default layout on first run.
+    pub fn new(allow_edit: bool) -> Hub {
+        let mut hub = Hub {
+            config: Config::load(),
+            plugins: plugins::discover(),
+            instances: Vec::new(),
+            // The editor is a dedicated edit surface — always in edit mode; the
+            // applet is display-only.
+            edit: allow_edit,
+            allow_edit,
+            palette_open: false,
+            pending_power: None,
+            battery: read_battery(),
+            redraw_until: None,
+        };
+        hub.rebuild(allow_edit);
+        hub
+    }
+
+    /// (Re)build the live instances from the loaded config. `seed` plants a
+    /// default layout when the config is empty (the editor does; the applet
+    /// shows nothing until the editor has set something up).
+    fn rebuild(&mut self, seed: bool) {
+        self.instances.clear();
+        if self.config.instances.is_empty() && seed {
+            for m in ["builtin.volume", "builtin.wifi", "builtin.bluetooth"] {
+                self.add_module(m);
+            }
+        } else {
+            self.build_instances();
+        }
+    }
+
+    /// Reload from disk — the applet calls this each time its popup opens, so it
+    /// reflects the latest layout set in the editor. Rebuilding re-instantiates
+    /// every module, which spawns external commands (nmcli/bluetoothctl/wpctl/…)
+    /// + a D-Bus connect — far too slow to do on the open path. So only rebuild
+    /// when the layout actually changed; otherwise keep the live instances (and
+    /// their open connections), making the popup open instantly.
+    pub fn reload(&mut self) {
+        let fresh = Config::load();
+        if fresh.instances == self.config.instances {
+            return;
+        }
+        self.config = fresh;
+        self.rebuild(false);
+    }
+
+    /// The tile grid. In edit mode it's a `ReorderableFlexRow` (drag to reorder)
+    /// with a resize/remove control bar above each tile; otherwise a plain
+    /// `flex_row` so the tiles' own controls stay interactive.
+    fn grid(&self) -> Element<'_, Message> {
+        if self.edit {
+            let mut row = widget::ReorderableFlexRow::new(Message::Reordered)
+                .spacing(GRID_GAP)
+                .width(Length::Fill);
+            for inst in &self.instances {
+                let w = inst.width.current();
+                // A small control bar ABOVE each tile (resize + remove) — kept
+                // outside the card so it never overlaps the tile's own controls.
+                let mut actions = widget::Row::new()
+                    .spacing(6)
+                    .align_y(Alignment::Center)
+                    .push(widget::space::horizontal());
+                if inst.module.descriptor().resizable {
+                    actions = actions.push(round_btn(
+                        "view-fullscreen-symbolic",
+                        Message::ResizeInstance(inst.id),
+                    ));
+                }
+                actions = actions.push(round_btn(
+                    "list-remove-symbolic",
+                    Message::RemoveInstance(inst.id),
+                ));
+                let bar = widget::container(actions).width(Length::Fixed(w)).padding([0, 6]);
+                // Clip the body to the (animating) width so a tile growing in or
+                // shrinking out reveals/wipes cleanly instead of letting oversized
+                // children (e.g. album art) spill past the shrinking card.
+                let body = widget::container(inst.module.view(inst.id, true, w))
+                    .width(Length::Fixed(w))
+                    .clip(true);
+                let tile = widget::Column::new().spacing(2).push(bar).push(body);
+                row = row.push(inst.id, tile);
+            }
+            row.into()
+        } else {
+            let children: Vec<Element<'_, Message>> = self
+                .instances
+                .iter()
+                .map(|inst| {
+                    let w = inst.width.current();
+                    widget::container(inst.module.view(inst.id, false, w))
+                        .width(Length::Fixed(w))
+                        .clip(true)
+                        .into()
+                })
+                .collect();
+            widget::flex_row(children)
+                .column_spacing(GRID_GAP)
+                .row_spacing(GRID_GAP)
+                .width(Length::Fill)
+                .into()
+        }
+    }
+
+    /// Compact layout used by the **applet** popup: power actions, the tile grid,
+    /// and the bottom bar, in a centered fixed-width column.
+    pub fn view(&self) -> Element<'_, Message> {
+        let header = self.power_bar();
+        let grid = self.grid();
+
+        let mut col = widget::Column::new()
+            .spacing(16)
+            .width(Length::Fill)
+            .push(header);
+        // Add-module picker sits right under the header (next to the Add button),
+        // not buried at the bottom of the page.
+        if self.palette_open {
+            col = col.push(self.palette());
+        }
+        if self.edit {
+            col = col.push(
+                widget::text::caption("Drag to rearrange · ⛶ resizes · − removes")
+                    .class(cosmic::style::Text::Custom(theme::dim_text)),
+            );
+            col = col.push(Self::grid_ruler());
+        }
+        col = col.push(grid);
+        col = col.push(self.bottom_bar());
+
+        // Center the fixed-width 4-column block in the window.
+        widget::scrollable(
+            widget::container(widget::container(col).max_width(TileSize::Full.width()))
+                .padding(20)
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        )
+        .into()
+    }
+
+    /// The **editor** layout (window app): a persistent left sidebar to add
+    /// modules, and the live grid as the arrangement canvas (always in edit
+    /// mode). Reuses `grid()` — this is the same grid the applet renders.
+    pub fn editor_view(&self) -> Element<'_, Message> {
+        let hint = widget::text::caption("Drag to rearrange · ⛶ resizes · − removes")
+            .class(cosmic::style::Text::Custom(theme::dim_text));
+
+        // The grid is a fixed 4-column block; cap it with an inner container,
+        // then center that block in the (wider) canvas — same nesting the applet
+        // view uses (max_width and centering on the SAME container misbehaves).
+        let block = widget::container(
+            widget::Column::new()
+                .spacing(12)
+                .push(hint)
+                .push(Self::grid_ruler())
+                .push(self.grid()),
+        )
+        .max_width(TileSize::Full.width());
+        let canvas = widget::scrollable(
+            widget::container(block)
+                .padding(24)
+                .width(Length::Fill)
+                .center_x(Length::Fill),
+        );
+
+        widget::Row::new()
+            .height(Length::Fill)
+            .push(self.sidebar())
+            .push(widget::container(canvas).width(Length::Fill).height(Length::Fill))
+            .into()
+    }
+
+    /// The editor's left sidebar: a scrollable "Add a module" list.
+    fn sidebar(&self) -> Element<'_, Message> {
+        let mut list = widget::Column::new().spacing(4);
+        for d in self.available() {
+            list = list.push(sidebar_item(&d.icon, &d.name, Message::AddModule(d.id.clone())));
+        }
+        let inner = widget::Column::new()
+            .spacing(12)
+            .push(widget::text::title4("Add a module"))
+            .push(widget::scrollable(list).height(Length::Fill));
+        widget::container(inner)
+            .width(Length::Fixed(240.0))
+            .height(Length::Fill)
+            .padding(16)
+            .class(theme::card(false, theme::ACCENTS[0].1))
+            .into()
+    }
+
+    pub fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::ToggleEdit => {
+                // Only the editor (window) may enter edit mode.
+                if self.allow_edit {
+                    self.edit = !self.edit;
+                    if !self.edit {
+                        self.palette_open = false;
+                    }
+                    self.bump_redraw();
+                }
+            }
+            Message::OpenConfig => {
+                // The applet's gear: launch the companion editor window.
+                let _ = std::process::Command::new("cosmic-control-center").spawn();
+            }
+            // Applet-only plumbing — handled by the Applet host, never reaches
+            // the editor; arms here keep the match exhaustive.
+            Message::Surface(_) | Message::PopupClosed(_) => {}
+            Message::OpenPalette => {
+                self.palette_open = !self.palette_open;
+                self.bump_redraw();
+            }
+            Message::AddModule(id) => {
+                self.add_module(&id);
+                self.palette_open = false;
+            }
+            Message::RemoveInstance(id) => {
+                // Animate the tile out (width → 0); the Frame handler frees it
+                // once the exit finishes. Persist now so config drops it
+                // immediately (persist() skips `removing` tiles).
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    inst.removing = true;
+                    inst.width.set(0.0);
+                }
+                self.persist();
+            }
+            Message::ResizeInstance(id) => {
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    let min = inst.module.min_cols();
+                    let mut next = inst.size.toggled();
+                    while next.cols() < min {
+                        next = next.toggled();
+                    }
+                    inst.size = next;
+                    inst.width.set(next.width()); // animate to the new width
+                    self.persist();
+                }
+            }
+            Message::Reordered(order) => self.reorder(order),
+            Message::Poll => {
+                // Re-read polled state for every module (built-ins no-op).
+                for inst in &mut self.instances {
+                    let _ = inst.module.refresh();
+                }
+                self.battery = read_battery();
+            }
+            // The message itself drives a redraw; animated values interpolate
+            // off the wall clock in their own view(). Also reap any tile whose
+            // exit animation has finished (width settled at 0).
+            Message::Frame => {
+                self.instances
+                    .retain(|i| !(i.removing && !i.width.animating()));
+            }
+            Message::Power(a) => {
+                if a.needs_confirm() {
+                    self.pending_power = Some(a);
+                } else {
+                    a.run();
+                }
+            }
+            Message::PowerConfirm => {
+                if let Some(a) = self.pending_power.take() {
+                    a.run();
+                }
+            }
+            Message::PowerCancel => self.pending_power = None,
+            Message::Control(id, control, value) => {
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    return inst.module.on_control(&control, value);
+                }
+            }
+            Message::StateLoaded(id, control, value) => {
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    let _ = inst.module.on_control(&control, value);
+                }
+            }
+        }
+        Task::none()
+    }
+
+    pub fn subscription(&self) -> Subscription<Message> {
+        // The editor (preview) has no live data, so it never polls — only frame
+        // ticks for animations. The applet polls for live module state.
+        let mut subs = Vec::new();
+        if !builtin::preview() {
+            subs.push(time::every(Duration::from_secs(2)).map(|_| Message::Poll));
+        }
+        // Run frame ticks while something is animating OR a redraw burst is in
+        // flight (after a layout-changing toggle) — idle hubs otherwise stay at
+        // the 2s poll, no wasted 60fps redraws.
+        let bursting = self
+            .redraw_until
+            .is_some_and(|t| std::time::Instant::now() < t);
+        if bursting || self.instances.iter().any(|i| i.module.animating() || i.width.animating()) {
+            subs.push(time::every(Duration::from_millis(16)).map(|_| Message::Frame));
+        }
+        Subscription::batch(subs)
+    }
+}
+
+impl Hub {
+    /// Schedule a brief redraw burst so a layout change fully repaints across
+    /// all swapchain buffers (see `redraw_until`).
+    fn bump_redraw(&mut self) {
+        self.redraw_until = Some(std::time::Instant::now() + Duration::from_millis(300));
+    }
+}
+
+/// The standalone window app — the configuration **editor**. A thin
+/// `cosmic::Application` shell around a `Hub` with editing enabled.
+pub struct App {
+    core: Core,
+    hub: Hub,
+}
+
+impl cosmic::Application for App {
+    type Executor = cosmic::executor::Default;
+    type Flags = ();
+    type Message = Message;
+    const APP_ID: &'static str = crate::config::APP_ID;
+
+    fn core(&self) -> &Core {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut Core {
+        &mut self.core
+    }
+
+    fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
+        // The editor is a data-free layout surface — no live fetches/polling.
+        builtin::set_preview(true);
+        (App { core, hub: Hub::new(true) }, Task::none())
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        self.hub.editor_view()
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        self.hub.update(message)
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        self.hub.subscription()
+    }
+}
+
+/// A small circular icon button for the edit-mode resize/remove controls, so
+/// they read clearly as buttons. Built with `button::custom` (a real button →
+/// reliably rendered + hover feedback) and a fully-round custom style.
+fn round_btn<'a>(icon: &str, msg: Message) -> Element<'a, Message> {
+    let style = |bg: f32| {
+        move |_focused: bool, t: &cosmic::Theme| {
+            // Foreground from the theme so the glyph/label stay legible in light
+            // mode (white-on-light was invisible).
+            let fg: cosmic::iced::Color = t.cosmic().background.on.into();
+            let mut s = cosmic::widget::button::Style::new();
+            s.background = Some(cosmic::iced::Background::Color(theme::alpha(fg, bg)));
+            s.border_radius = 12.0.into();
+            s.icon_color = Some(fg);
+            s.text_color = Some(fg);
+            s
+        }
+    };
+    // Don't fix the button to 24×24: that forces min=max=24 limits onto the
+    // content, and iced's `limits.resolve` clamps the icon's Fixed(size) UP to
+    // that 24px floor — so `.size()` was silently ignored. Instead shrink-wrap:
+    // the 24px circle = 10px glyph + 7px padding on every side (10 + 2·7 = 24).
+    widget::button::custom(widget::icon::from_name(icon).size(10))
+        .padding(7)
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(style(0.16)),
+            disabled: Box::new(move |t| style(0.10)(false, t)),
+            hovered: Box::new(style(0.30)),
+            pressed: Box::new(style(0.38)),
+        })
+        .on_press(msg)
+        .into()
+}
+
+/// Read the first real battery from sysfs as (percent, charging?). Returns
+/// `None` on desktops (no `power_supply` of type `Battery`).
+fn read_battery() -> Option<(u8, bool)> {
+    let dir = std::fs::read_dir("/sys/class/power_supply").ok()?;
+    for entry in dir.flatten() {
+        let path = entry.path();
+        let kind = std::fs::read_to_string(path.join("type")).unwrap_or_default();
+        if kind.trim() != "Battery" {
+            continue;
+        }
+        let Ok(cap) = std::fs::read_to_string(path.join("capacity")) else {
+            continue;
+        };
+        let Ok(pct) = cap.trim().parse::<u8>() else {
+            continue;
+        };
+        let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
+        let charging = matches!(status.trim(), "Charging" | "Full");
+        return Some((pct.min(100), charging));
+    }
+    None
+}
+
+/// Pick a freedesktop battery icon for a charge level + charging state.
+fn battery_icon(pct: u8, charging: bool) -> &'static str {
+    if charging {
+        return "battery-good-charging-symbolic";
+    }
+    match pct {
+        90..=100 => "battery-full-symbolic",
+        55..=89 => "battery-good-symbolic",
+        25..=54 => "battery-low-symbolic",
+        10..=24 => "battery-caution-symbolic",
+        _ => "battery-empty-symbolic",
+    }
+}

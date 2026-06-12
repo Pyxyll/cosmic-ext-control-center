@@ -1,0 +1,21 @@
+// A harmless demo plugin — drop into ~/.config/cosmic-control-center/plugins/
+// then add it from the control center's Edit → ＋ Add palette.
+//
+// Shows all four control types. Nothing here touches hardware:
+//   - Clock is a live Label polled every second (proves get-polling works).
+//   - Level appends to /tmp/ccc-demo.log.
+//   - Flag / Ping use notify-send (no-op if you don't have notifications).
+Manifest(
+    id: "demo.echo",
+    name: "Echo Demo",
+    icon: "utilities-terminal-symbolic",
+    size: Large,
+    controls: [
+        Label(id: "clock", label: "Clock", get: Cmd("date +%H:%M:%S"), poll: 1.0),
+        Slider(id: "level", label: "Level", min: 0.0, max: 100.0,
+               set: Cmd("echo level={value} >> /tmp/ccc-demo.log")),
+        Toggle(id: "flag", label: "Flag",
+               set: Cmd("notify-send 'Echo Demo' 'flag = {value}'")),
+        Button(id: "ping", label: "Ping", run: Cmd("notify-send 'Echo Demo' 'ping'")),
+    ],
+)

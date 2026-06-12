@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Control Center
+GenericName=Control Center editor
+Comment=Configure your modular COSMIC control center
+Type=Application
+Icon=preferences-system
+Exec=cosmic-control-center
+Terminal=false
+StartupNotify=true
+Categories=Settings;
+Keywords=control;center;settings;cosmic;toggle;applet;modules;
+StartupWMClass=com.pyxyll.CosmicControlCenter

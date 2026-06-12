@@ -1,0 +1,86 @@
+[package]
+name = "cosmic-control-center"
+version = "0.1.0"
+edition = "2024"
+description = "A modular, pluggable control center for the COSMIC desktop"
+license = "MIT"
+
+[lib]
+name = "cosmic_control_center"
+path = "src/lib.rs"
+
+# The configuration editor (standalone window).
+[[bin]]
+name = "cosmic-control-center"
+path = "src/main.rs"
+
+# The panel applet — the runtime surface hosting the hub in a popup.
+[[bin]]
+name = "cosmic-control-center-applet"
+path = "src/bin/applet.rs"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+ron = "0.8"
+serde = { version = "1", features = ["derive"] }
+# Media module: D-Bus MPRIS via the blocking API (own internal executor, so it
+# doesn't fight cosmic's tokio runtime in the sync poll). image: decode artwork.
+zbus = "5"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+
+[dependencies.libcosmic]
+git = "https://github.com/pop-os/libcosmic.git"
+features = [
+    "wgpu",
+    "winit",
+    "tokio",
+    "wayland",
+    "applet",
+    "applet-token",
+    "multi-window",
+]
+
+[dependencies.cosmic-config]
+git = "https://github.com/pop-os/libcosmic.git"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# --- packaging (cargo-deb / cargo-generate-rpm, driven by .github/workflows) ---
+
+[package.metadata.deb]
+name = "cosmic-control-center"
+maintainer = "pyxyll <pyxyllv@gmail.com>"
+copyright = "2026, pyxyll <pyxyllv@gmail.com>"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+A modular, pluggable control center for the COSMIC desktop: a roomy editor to \
+arrange module tiles (Wi-Fi, volume, media, power profile, gauges…) and a lean \
+panel applet that shows that layout live. Extensible via declarative RON plugins."""
+section = "utils"
+priority = "optional"
+depends = "$auto, libxkbcommon0, libwayland-client0"
+recommends = "network-manager, bluez, rfkill, wireplumber, power-profiles-daemon"
+assets = [
+    ["target/release/cosmic-control-center",        "usr/bin/", "755"],
+    ["target/release/cosmic-control-center-applet", "usr/bin/", "755"],
+    ["resources/com.pyxyll.CosmicControlCenter.desktop",       "usr/share/applications/", "644"],
+    ["resources/com.pyxyll.CosmicControlCenterApplet.desktop", "usr/share/applications/", "644"],
+    ["resources/com.pyxyll.CosmicControlCenter.metainfo.xml",  "usr/share/metainfo/", "644"],
+    ["README.md", "usr/share/doc/cosmic-control-center/README.md", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "cosmic-control-center"
+license = "MIT"
+summary = "A modular, pluggable control center for the COSMIC desktop"
+requires = { libxkbcommon = "*", wayland = "*" }
+assets = [
+    { source = "target/release/cosmic-control-center",        dest = "/usr/bin/cosmic-control-center",        mode = "755" },
+    { source = "target/release/cosmic-control-center-applet", dest = "/usr/bin/cosmic-control-center-applet", mode = "755" },
+    { source = "resources/com.pyxyll.CosmicControlCenter.desktop",       dest = "/usr/share/applications/com.pyxyll.CosmicControlCenter.desktop",       mode = "644" },
+    { source = "resources/com.pyxyll.CosmicControlCenterApplet.desktop", dest = "/usr/share/applications/com.pyxyll.CosmicControlCenterApplet.desktop", mode = "644" },
+    { source = "resources/com.pyxyll.CosmicControlCenter.metainfo.xml",  dest = "/usr/share/metainfo/com.pyxyll.CosmicControlCenter.metainfo.xml",      mode = "644" },
+    { source = "README.md", dest = "/usr/share/doc/cosmic-control-center/README.md", mode = "644" },
+]

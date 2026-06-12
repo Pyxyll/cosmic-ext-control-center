@@ -1,0 +1,84 @@
+name: Release
+
+# Tag push (v*) cuts a release; manual dispatch just tests the build.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    name: Build Linux artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libfontconfig1-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Install cargo-deb + cargo-generate-rpm
+        run: |
+          cargo install --locked cargo-deb
+          cargo install --locked cargo-generate-rpm
+
+      - name: Build .deb
+        run: cargo deb --no-build --no-strip
+
+      - name: Build .rpm
+        run: cargo generate-rpm --auto-req disabled
+
+      - name: Build static-binary tarball
+        run: |
+          # GITHUB_REF_NAME is "v0.1.0" on a tag, "main" on a dispatch run —
+          # strip a leading "v"; no slashes either way.
+          VERSION="${GITHUB_REF_NAME#v}"
+          STAGING="cosmic-control-center-${VERSION}-x86_64-linux"
+          mkdir -p "$STAGING"/{bin,share/applications,share/metainfo}
+          cp target/release/cosmic-control-center        "$STAGING/bin/"
+          cp target/release/cosmic-control-center-applet "$STAGING/bin/"
+          cp resources/com.pyxyll.CosmicControlCenter.desktop        "$STAGING/share/applications/"
+          cp resources/com.pyxyll.CosmicControlCenterApplet.desktop  "$STAGING/share/applications/"
+          cp resources/com.pyxyll.CosmicControlCenter.metainfo.xml   "$STAGING/share/metainfo/"
+          cp LICENSE README.md "$STAGING/"
+          tar -czf "$STAGING.tar.gz" "$STAGING"
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p release-artifacts
+          cp target/debian/*.deb              release-artifacts/
+          cp target/generate-rpm/*.rpm        release-artifacts/
+          cp cosmic-control-center-*.tar.gz   release-artifacts/
+          ls -la release-artifacts/
+
+      - name: Upload artifacts to GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-artifacts/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+
+      - name: Upload artifacts as workflow output (dispatch run)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-artifacts
+          path: release-artifacts/

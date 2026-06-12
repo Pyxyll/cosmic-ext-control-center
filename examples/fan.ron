@@ -1,0 +1,30 @@
+// Template: a plugin tile for a case fan controlled by a hypothetical
+// `fanctl` CLI. Copy to ~/.config/cosmic-control-center/plugins/ and adapt the
+// commands to your actual tool. This is the shape your mouse / RGB / fan tiles
+// take — no Rust, no recompile.
+//
+// Control types:
+//   Slider(min,max, get?, set?, poll?)  — get prints a number; set gets {value}
+//   Toggle(get?, set?, poll?)           — get prints true/1/on; set gets true|false
+//   Label(get, poll?)                   — read-only; shows the command's stdout
+//   Button(run)                         — fires a command on press
+//
+// `{value}` is substituted in set/run commands. `poll` (seconds) re-reads get.
+// SECURITY: commands run as you. Only install manifests you trust.
+Manifest(
+    id: "dylan.fan",
+    name: "Case Fan",
+    icon: "weather-windy-symbolic",
+    size: Large,
+    controls: [
+        Slider(id: "speed", label: "Speed", min: 0.0, max: 100.0,
+               get: Cmd("fanctl get-speed"),
+               set: Cmd("fanctl set-speed {value}"),
+               poll: 5.0),
+        Toggle(id: "auto", label: "Auto curve",
+               get: Cmd("fanctl is-auto"),
+               set: Cmd("fanctl set-auto {value}")),
+        Label(id: "rpm", label: "RPM", get: Cmd("fanctl rpm"), poll: 2.0),
+        Button(id: "reset", label: "Reset", run: Cmd("fanctl reset")),
+    ],
+)

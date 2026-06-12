@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.pyxyll.CosmicControlCenter</id>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <project_group>COSMIC</project_group>
+
+  <name>Control Center</name>
+  <summary>A modular, pluggable control center for the COSMIC desktop</summary>
+
+  <developer id="com.pyxyll">
+    <name>pyxyll</name>
+  </developer>
+  <update_contact>pyxyllv@gmail.com</update_contact>
+
+  <description>
+    <p>
+      A control center for COSMIC, built as a hub of configurable module tiles.
+      Arrange the tiles you want in a roomy editor, then a lean panel applet
+      shows that exact layout in a popup — live and interactive.
+    </p>
+    <p>Built-in modules include:</p>
+    <ul>
+      <li>Volume and Microphone (with mute), Media controls (MPRIS)</li>
+      <li>Wi-Fi (SSID + link rate), VPN, Bluetooth, Airplane mode</li>
+      <li>Power profile (cycle), Appearance (light/dark), session/power actions</li>
+      <li>CPU / GPU / RAM gauges, a battery readout, and section dividers</li>
+    </ul>
+    <p>
+      A declarative RON plugin system lets anyone add new tiles — bound to shell
+      commands — with no Rust and no recompile. Tiles run with your privileges;
+      install only plugins you trust.
+    </p>
+    <p>
+      Early preview (0.1.0): the applet refreshes live module state on a poll,
+      which can briefly stutter while the popup is open — an async pass is
+      planned. The plugin system is functional but experimental.
+    </p>
+  </description>
+
+  <url type="homepage">https://github.com/Pyxyll/cosmic-control-center</url>
+  <url type="bugtracker">https://github.com/Pyxyll/cosmic-control-center/issues</url>
+  <url type="vcs-browser">https://github.com/Pyxyll/cosmic-control-center</url>
+
+  <launchable type="desktop-id">com.pyxyll.CosmicControlCenter.desktop</launchable>
+
+  <provides>
+    <binary>cosmic-control-center</binary>
+    <binary>cosmic-control-center-applet</binary>
+  </provides>
+
+  <categories>
+    <category>Settings</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>control center</keyword>
+    <keyword>applet</keyword>
+    <keyword>toggles</keyword>
+    <keyword>cosmic</keyword>
+    <keyword>quick settings</keyword>
+  </keywords>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#DA2862</color>
+    <color type="primary" scheme_preference="dark">#1E293B</color>
+  </branding>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-06-12">
+      <description>
+        <p>First public preview: modular control-center editor + panel applet, a
+        suite of built-in modules, light/dark theming, and a declarative RON
+        plugin system.</p>
+      </description>
+      <url>https://github.com/Pyxyll/cosmic-control-center/releases/tag/v0.1.0</url>
+    </release>
+  </releases>
+</component>

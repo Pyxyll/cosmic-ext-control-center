@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Control Center
+Comment=Modular, pluggable control center
+Type=Application
+Exec=cosmic-control-center-applet
+Icon=emblem-system-symbolic
+Terminal=false
+Categories=COSMIC;
+X-CosmicApplet=true
+NoDisplay=true
