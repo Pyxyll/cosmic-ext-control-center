@@ -783,6 +783,16 @@ impl cosmic::Application for App {
     fn subscription(&self) -> Subscription<Message> {
         self.hub.subscription()
     }
+
+    /// A second launch activated this instance; raise our window. On Wayland this
+    /// only takes effect when the new launch passed an activation token (the app
+    /// launcher does; a bare `Command::spawn`, e.g. the applet gear, does not).
+    fn dbus_activation(&mut self, _msg: cosmic::dbus_activation::Message) -> Task<Message> {
+        self.core
+            .main_window_id()
+            .map(cosmic::iced::window::gain_focus)
+            .unwrap_or_else(Task::none)
+    }
 }
 
 /// A small circular icon button for the edit-mode resize/remove controls, so
