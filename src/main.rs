@@ -14,7 +14,7 @@ fn main() -> ExitCode {
         // Roomy by default: sidebar (240) + the 4-column grid canvas.
         .size(cosmic::iced::Size::new(900.0, 740.0));
 
-    match cosmic::app::run::<app::App>(settings, ()) {
+    match cosmic::app::run_single_instance::<app::App>(settings, app::Flags) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("cosmic-control-center: {e}");

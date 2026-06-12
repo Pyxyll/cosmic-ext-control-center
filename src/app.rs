@@ -733,8 +733,20 @@ impl Hub {
     }
 }
 
+/// Flags for the editor. Single-instance activation requires `CosmicFlags`; the
+/// editor takes no subcommands or args, so the trait defaults apply.
+#[derive(Debug, Clone, Default)]
+pub struct Flags;
+
+impl cosmic::app::CosmicFlags for Flags {
+    type SubCommand = String;
+    type Args = Vec<String>;
+}
+
 /// The standalone window app — the configuration **editor**. A thin
-/// `cosmic::Application` shell around a `Hub` with editing enabled.
+/// `cosmic::Application` shell around a `Hub` with editing enabled. Runs
+/// single-instance (see `main.rs`) so a second launch focuses the existing
+/// window instead of opening a duplicate.
 pub struct App {
     core: Core,
     hub: Hub,
@@ -742,7 +754,7 @@ pub struct App {
 
 impl cosmic::Application for App {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = Flags;
     type Message = Message;
     const APP_ID: &'static str = crate::config::APP_ID;
 
@@ -754,7 +766,7 @@ impl cosmic::Application for App {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
+    fn init(core: Core, _flags: Flags) -> (Self, Task<Message>) {
         // The editor is a data-free layout surface — no live fetches/polling.
         builtin::set_preview(true);
         (App { core, hub: Hub::new(true) }, Task::none())
