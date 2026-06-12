@@ -101,6 +101,10 @@ Tile resizing is uneven. Not every module lays out cleanly at every column
 width, so some tiles look cramped or clip their contents at certain sizes.
 Per-module layout across the size range still needs work.
 
+The media player tile uses a custom look (a blurred album-art backdrop) that
+does not match the COSMIC design system. This is a personal styling choice and
+the design is still being worked on.
+
 ## Built with
 
 [libcosmic](https://github.com/pop-os/libcosmic), which is MPL-2.0. This project
