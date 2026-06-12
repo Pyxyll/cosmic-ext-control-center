@@ -97,6 +97,10 @@ The plugin system is functional but experimental. For now it only supports
 `Cmd` actions and basic styling. D-Bus and HTTP actions, plus native-looking
 plugin tiles, are planned.
 
+Tile resizing is uneven. Not every module lays out cleanly at every column
+width, so some tiles look cramped or clip their contents at certain sizes.
+Per-module layout across the size range still needs work.
+
 ## Built with
 
 [libcosmic](https://github.com/pop-os/libcosmic), which is MPL-2.0. This project
