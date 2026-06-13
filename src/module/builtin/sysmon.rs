@@ -8,7 +8,7 @@
 use crate::app::Message;
 use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, TileSize, ValueAnim};
 use crate::theme;
-use crate::widgets::gauge::gauge_svg;
+use crate::widgets::gauge::{gauge_svg, sparkline_svg};
 use cosmic::app::Task;
 use cosmic::iced::widget::Stack;
 use cosmic::iced::{Alignment, Length};
@@ -67,9 +67,19 @@ fn read_gpu(path: &Path) -> Option<f32> {
         .map(|v| (v / 100.0).clamp(0.0, 1.0))
 }
 
-/// Used fraction of the filesystem at `mount` via statvfs(2) — a syscall, not a
+/// A filesystem's capacity snapshot: used fraction (for the gauge) plus absolute
+/// byte figures (for the wide capacity bar).
+#[derive(Clone, Copy, Default)]
+struct DiskInfo {
+    frac: f32,
+    used: u64,
+    total: u64,
+    free: u64,
+}
+
+/// Capacity of the filesystem at `mount` via statvfs(2) — a syscall, not a
 /// subprocess, so the disk gauge stays as cheap as the /proc readers.
-fn read_disk(mount: &str) -> Option<f32> {
+fn read_disk(mount: &str) -> Option<DiskInfo> {
     use std::mem::MaybeUninit;
     let path = std::ffi::CString::new(mount).ok()?;
     // SAFETY: `path` is a valid NUL-terminated C string; statvfs only writes
@@ -80,14 +90,64 @@ fn read_disk(mount: &str) -> Option<f32> {
             return None;
         }
         let s = stat.assume_init();
-        let total = s.f_blocks as f64;
-        if total == 0.0 {
+        if s.f_blocks == 0 {
             return None;
         }
+        let bs = s.f_frsize as u64;
+        let total = s.f_blocks as u64 * bs;
+        let free = s.f_bavail as u64 * bs;
         // Used as the user sees it (blocks not available to them), matching
-        // `df` Use% closely enough for a gauge.
-        Some((1.0 - s.f_bavail as f64 / total).clamp(0.0, 1.0) as f32)
+        // `df` closely enough.
+        let used = (s.f_blocks - s.f_bfree) as u64 * bs;
+        let frac = (1.0 - s.f_bavail as f64 / s.f_blocks as f64).clamp(0.0, 1.0) as f32;
+        Some(DiskInfo {
+            frac,
+            used,
+            total,
+            free,
+        })
     }
+}
+
+/// Human-readable byte size in decimal units (matches how drive capacity is
+/// usually labelled, e.g. a "512 GB" SSD).
+fn fmt_bytes(b: u64) -> String {
+    let gb = b as f64 / 1e9;
+    if gb >= 1000.0 {
+        format!("{:.1} TB", gb / 1000.0)
+    } else if gb >= 1.0 {
+        format!("{gb:.0} GB")
+    } else {
+        format!("{:.0} MB", b as f64 / 1e6)
+    }
+}
+
+/// Wide disk tile (3col+): a used/free capacity bar with absolute figures —
+/// more useful than a time graph for a value that barely moves.
+fn capacity_tile<'a>(width: f32, label: &str, info: DiskInfo) -> Element<'a, Message> {
+    let head = widget::Row::new()
+        .spacing(8)
+        .align_y(Alignment::Center)
+        .push(widget::icon::from_name("drive-multidisk-symbolic").size(20))
+        .push(widget::text::body(label.to_string()))
+        .push(widget::space::horizontal())
+        .push(widget::text::body(format!("{:.0}%", info.frac * 100.0)));
+    let bar = widget::progress_bar::determinate_linear(info.frac)
+        .width(Length::Fill)
+        .girth(Length::Fixed(8.0));
+    let detail = widget::text::caption(format!(
+        "{} of {} used · {} free",
+        fmt_bytes(info.used),
+        fmt_bytes(info.total),
+        fmt_bytes(info.free)
+    ))
+    .class(cosmic::style::Text::Custom(theme::dim_text));
+    let col = widget::Column::new()
+        .spacing(8)
+        .push(head)
+        .push(bar)
+        .push(detail);
+    super::tile(width, false, col)
 }
 
 /// Real, mounted filesystems backed by a block device (`/dev/...`), from
@@ -167,6 +227,57 @@ fn gauge_tile<'a>(width: f32, value: f32, label: &str) -> Element<'a, Message> {
     super::tile(width, false, centered)
 }
 
+/// Rolling history of recent samples, kept by each metric module to feed the
+/// large-size line graph. ~2 minutes at the 2s applet poll.
+const HIST_CAP: usize = 64;
+
+fn push_hist(hist: &mut Vec<f32>, v: f32) {
+    hist.push(v);
+    if hist.len() > HIST_CAP {
+        hist.remove(0);
+    }
+}
+
+/// Wide-tile body (3col+): a history line graph with the label and the current
+/// value overlaid top-left.
+fn graph_tile<'a>(width: f32, value: f32, hist: &[f32], label: &str) -> Element<'a, Message> {
+    let accent = theme::ACCENTS[0].1;
+    let cw = (width - 28.0).max(1.0);
+    let gh = 84.0_f32;
+    let graph = widget::svg(widget::svg::Handle::from_memory(
+        sparkline_svg(hist, cw, gh, theme::fg(), accent).into_bytes(),
+    ))
+    .width(Length::Fixed(cw))
+    .height(Length::Fixed(gh));
+
+    // A container with only padding leaves its content top-left.
+    let overlay = widget::container(
+        widget::Column::new()
+            .spacing(1)
+            .push(
+                widget::text(label.to_string())
+                    .size(11)
+                    .class(cosmic::style::Text::Custom(theme::dim_text)),
+            )
+            .push(widget::text(format!("{:.0}%", value * 100.0)).size(20)),
+    )
+    .width(Length::Fixed(cw))
+    .height(Length::Fixed(gh))
+    .padding(6);
+
+    let stacked = Stack::new().push(graph).push(overlay);
+    super::tile(width, false, stacked)
+}
+
+/// Pick the gauge (1-2col) or the history graph (3col+) for a metric tile.
+fn metric_tile<'a>(width: f32, value: f32, hist: &[f32], label: &str) -> Element<'a, Message> {
+    if crate::module::cols_for_width(width) >= 3 {
+        graph_tile(width, value, hist, label)
+    } else {
+        gauge_tile(width, value, label)
+    }
+}
+
 fn metric_desc(id: &str, name: &str, icon: &str) -> ModuleDescriptor {
     ModuleDescriptor {
         id: id.into(),
@@ -183,6 +294,7 @@ pub struct CpuModule {
     desc: ModuleDescriptor,
     value: ValueAnim,
     prev: Option<(u64, u64)>,
+    hist: Vec<f32>,
 }
 
 impl CpuModule {
@@ -191,6 +303,7 @@ impl CpuModule {
             desc: metric_desc("builtin.cpu", "CPU", "utilities-system-monitor-symbolic"),
             value: ValueAnim::new(0.0),
             prev: read_cpu_times(),
+            hist: Vec::new(),
         }
     }
     fn read(&mut self) {
@@ -199,7 +312,9 @@ impl CpuModule {
                 let dt = total.saturating_sub(pt);
                 let di = idle.saturating_sub(pi);
                 if dt > 0 {
-                    self.value.set((1.0 - di as f32 / dt as f32).clamp(0.0, 1.0));
+                    let v = (1.0 - di as f32 / dt as f32).clamp(0.0, 1.0);
+                    self.value.set(v);
+                    push_hist(&mut self.hist, v);
                 }
             }
             self.prev = Some((total, idle));
@@ -212,7 +327,7 @@ impl Module for CpuModule {
         &self.desc
     }
     fn view(&self, _id: InstanceId, _edit: bool, width: f32) -> Element<'_, Message> {
-        gauge_tile(width, self.value.current(), "CPU")
+        metric_tile(width, self.value.current(), &self.hist, "CPU")
     }
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
@@ -231,6 +346,7 @@ impl Module for CpuModule {
 pub struct RamModule {
     desc: ModuleDescriptor,
     value: ValueAnim,
+    hist: Vec<f32>,
 }
 
 impl RamModule {
@@ -238,9 +354,11 @@ impl RamModule {
         let mut m = Self {
             desc: metric_desc("builtin.ram", "RAM", "drive-harddisk-symbolic"),
             value: ValueAnim::new(0.0),
+            hist: Vec::new(),
         };
         if let Some(r) = read_ram() {
             m.value.set(r);
+            push_hist(&mut m.hist, r);
         }
         m
     }
@@ -251,7 +369,7 @@ impl Module for RamModule {
         &self.desc
     }
     fn view(&self, _id: InstanceId, _edit: bool, width: f32) -> Element<'_, Message> {
-        gauge_tile(width, self.value.current(), "RAM")
+        metric_tile(width, self.value.current(), &self.hist, "RAM")
     }
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
@@ -259,6 +377,7 @@ impl Module for RamModule {
     fn refresh(&mut self) -> Task<Message> {
         if let Some(r) = read_ram() {
             self.value.set(r);
+            push_hist(&mut self.hist, r);
         }
         Task::none()
     }
@@ -273,6 +392,7 @@ pub struct GpuModule {
     desc: ModuleDescriptor,
     value: ValueAnim,
     path: Option<PathBuf>,
+    hist: Vec<f32>,
 }
 
 impl GpuModule {
@@ -282,10 +402,12 @@ impl GpuModule {
             desc: metric_desc("builtin.gpu", "GPU", "video-display-symbolic"),
             value: ValueAnim::new(0.0),
             path,
+            hist: Vec::new(),
         };
         if let Some(p) = &m.path {
             if let Some(g) = read_gpu(p) {
                 m.value.set(g);
+                push_hist(&mut m.hist, g);
             }
         }
         m
@@ -297,7 +419,7 @@ impl Module for GpuModule {
         &self.desc
     }
     fn view(&self, _id: InstanceId, _edit: bool, width: f32) -> Element<'_, Message> {
-        gauge_tile(width, self.value.current(), "GPU")
+        metric_tile(width, self.value.current(), &self.hist, "GPU")
     }
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
@@ -306,6 +428,7 @@ impl Module for GpuModule {
         if let Some(p) = &self.path {
             if let Some(g) = read_gpu(p) {
                 self.value.set(g);
+                push_hist(&mut self.hist, g);
             }
         }
         Task::none()
@@ -323,6 +446,7 @@ pub struct DiskModule {
     /// Which filesystem this tile watches. Per-instance, so several disk tiles
     /// can each track a different mount.
     mount: String,
+    info: DiskInfo,
 }
 
 impl DiskModule {
@@ -336,11 +460,17 @@ impl DiskModule {
             desc: metric_desc("builtin.disk", "Disk", "drive-multidisk-symbolic"),
             value: ValueAnim::new(0.0),
             mount,
+            info: DiskInfo::default(),
         };
-        if let Some(d) = read_disk(&m.mount) {
-            m.value.set(d);
-        }
+        m.read();
         m
+    }
+
+    fn read(&mut self) {
+        if let Some(d) = read_disk(&self.mount) {
+            self.info = d;
+            self.value.set(d.frac);
+        }
     }
 }
 
@@ -349,15 +479,19 @@ impl Module for DiskModule {
         &self.desc
     }
     fn view(&self, _id: InstanceId, _edit: bool, width: f32) -> Element<'_, Message> {
-        gauge_tile(width, self.value.current(), &mount_label(&self.mount))
+        // 1-2col: a percentage gauge. 3col+: a capacity bar with byte figures (a
+        // time graph is pointless for a value that barely moves).
+        if crate::module::cols_for_width(width) >= 3 {
+            capacity_tile(width, &mount_label(&self.mount), self.info)
+        } else {
+            gauge_tile(width, self.value.current(), &mount_label(&self.mount))
+        }
     }
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
     fn refresh(&mut self) -> Task<Message> {
-        if let Some(d) = read_disk(&self.mount) {
-            self.value.set(d);
-        }
+        self.read();
         Task::none()
     }
     fn animating(&self) -> bool {
@@ -376,9 +510,7 @@ impl Module for DiskModule {
         if let Some(m) = list_mounts().get(index) {
             if m != &self.mount {
                 self.mount = m.clone();
-                if let Some(d) = read_disk(&self.mount) {
-                    self.value.set(d);
-                }
+                self.read();
             }
         }
     }

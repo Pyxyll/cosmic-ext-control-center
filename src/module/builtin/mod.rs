@@ -117,6 +117,27 @@ pub(crate) fn toggle_tile<'a>(
     // the Fill so measurement — and the layout — stay correct.
     const H: f32 = 64.0;
 
+    // 1col: there's no room for the label/status/chevron pill, so collapse to a
+    // centered icon that toggles on tap (still tinted when on). Settings aren't
+    // reachable here — that's the 2col+ layout.
+    if cols_for_width(width) <= 1 {
+        let mut ma = widget::mouse_area(
+            widget::container(widget::icon::from_name(icon).size(26))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .center_y(Length::Fill),
+        );
+        if !edit {
+            ma = ma.on_press(Message::Control(id, "on".into(), ControlValue::Bool(!on)));
+        }
+        return widget::container(ma)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(H))
+            .class(theme::card(on, accent))
+            .into();
+    }
+
     let info = widget::Row::new()
         .spacing(10)
         .align_y(Alignment::Center)

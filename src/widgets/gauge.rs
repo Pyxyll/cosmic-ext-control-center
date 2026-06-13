@@ -63,3 +63,56 @@ pub fn gauge_svg(value: f32, fg: Color, accent: Color) -> String {
          {value_arc}{ticks}</svg>"
     )
 }
+
+/// SVG markup for a history sparkline (a filled area under a line) at the given
+/// pixel size. The viewBox matches `w`x`h` so strokes aren't distorted by
+/// non-uniform scaling. `history` is oldest-to-newest, each 0..1. Drawn as an
+/// image for the same applet-popup reason as the gauge.
+pub fn sparkline_svg(history: &[f32], w: f32, h: f32, fg: Color, accent: Color) -> String {
+    let (w, h) = (w.max(1.0), h.max(1.0));
+    let grid = css(Color { a: 0.10, ..fg });
+    // Baseline + quarter gridlines, always drawn so an empty/short history still
+    // reads as a chart frame.
+    let mut gridlines = String::new();
+    for f in [0.25_f32, 0.5, 0.75] {
+        let y = h * f;
+        gridlines.push_str(&format!(
+            "<line x1='0' y1='{y:.2}' x2='{w:.2}' y2='{y:.2}' stroke='{grid}' stroke-width='1'/>"
+        ));
+    }
+
+    let body = if history.len() >= 2 {
+        let n = history.len();
+        let dx = w / (n as f32 - 1.0);
+        // A small top/bottom inset so a 100% or 0% sample isn't clipped by the
+        // stroke width.
+        let pad = 2.0_f32;
+        let pts: Vec<(f32, f32)> = history
+            .iter()
+            .enumerate()
+            .map(|(i, v)| (i as f32 * dx, h - pad - v.clamp(0.0, 1.0) * (h - 2.0 * pad)))
+            .collect();
+        let line = pts
+            .iter()
+            .map(|(x, y)| format!("{x:.2},{y:.2}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut area = format!("M0 {h:.2} ");
+        for (x, y) in &pts {
+            area.push_str(&format!("L{x:.2} {y:.2} "));
+        }
+        area.push_str(&format!("L{w:.2} {h:.2} Z"));
+        let fillc = css(Color { a: 0.20, ..accent });
+        let linec = css(accent);
+        format!(
+            "<path d='{area}' fill='{fillc}' stroke='none'/>\
+             <polyline points='{line}' fill='none' stroke='{linec}' stroke-width='2' stroke-linejoin='round' stroke-linecap='round'/>"
+        )
+    } else {
+        String::new()
+    };
+
+    format!(
+        "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 {w:.2} {h:.2}'>{gridlines}{body}</svg>"
+    )
+}
