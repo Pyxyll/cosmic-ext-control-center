@@ -8,9 +8,10 @@
 use crate::app::Message;
 use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, TileSize, ValueAnim};
 use crate::theme;
-use crate::widgets::gauge::Gauge;
+use crate::widgets::gauge::gauge_svg;
 use cosmic::app::Task;
-use cosmic::iced::Length;
+use cosmic::iced::widget::Stack;
+use cosmic::iced::{Alignment, Length};
 use cosmic::prelude::*;
 use cosmic::widget;
 use std::fs;
@@ -66,18 +67,39 @@ fn read_gpu(path: &Path) -> Option<f32> {
         .map(|v| (v / 100.0).clamp(0.0, 1.0))
 }
 
-/// Shared tile body: a single gauge filling the tile.
+/// Shared tile body: a centered square gauge (SVG dial + native text overlay).
 fn gauge_tile<'a>(width: f32, value: f32, label: &str) -> Element<'a, Message> {
     let accent = theme::ACCENTS[0].1;
-    let g = widget::canvas(Gauge {
-        value,
-        accent,
-        anim: 0.0,
-        label: label.to_string(),
-    })
-    .width(Length::Fill)
-    .height(Length::Fixed(104.0));
-    super::tile(width, false, g)
+    // A definite square, capped to the tile's content width so it fits a 1col
+    // tile. The dial is an SVG image (positions correctly in the applet popup,
+    // unlike a canvas) with the percentage + label overlaid as native text.
+    let side = (width - 28.0).clamp(1.0, 104.0);
+    let dial = widget::svg(widget::svg::Handle::from_memory(
+        gauge_svg(value, theme::fg(), accent).into_bytes(),
+    ))
+    .width(Length::Fixed(side))
+    .height(Length::Fixed(side));
+
+    let text = widget::Column::new()
+        .align_x(Alignment::Center)
+        .push(widget::text(format!("{:.0}%", value * 100.0)).size(side * 0.22))
+        .push(
+            widget::text(label.to_string())
+                .size((side * 0.11).max(8.0))
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+        );
+
+    let stacked = Stack::new().push(dial).push(
+        widget::container(text)
+            .width(Length::Fixed(side))
+            .height(Length::Fixed(side))
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    );
+    let centered = widget::container(stacked)
+        .width(Length::Fill)
+        .center_x(Length::Fill);
+    super::tile(width, false, centered)
 }
 
 fn metric_desc(id: &str, name: &str, icon: &str) -> ModuleDescriptor {
