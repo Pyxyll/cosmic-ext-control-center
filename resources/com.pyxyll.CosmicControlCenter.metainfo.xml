@@ -71,6 +71,15 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.1" date="2026-06-13">
+      <description>
+        <p>Bug fixes: system monitor gauges now render correctly in the panel
+        applet popup; the power profile icon and the volume/microphone sliders
+        display correctly in the editor; the editor is single-instance and the
+        applet gear focuses the open editor instead of opening duplicates.</p>
+      </description>
+      <url>https://github.com/Pyxyll/cosmic-control-center/releases/tag/v0.1.1</url>
+    </release>
     <release version="0.1.0" date="2026-06-12">
       <description>
         <p>First public preview: modular control-center editor + panel applet, a
