@@ -8,7 +8,7 @@ layout in a popup, where the tiles are live and interactive. If a tile you want
 isn't built in, you can add one with a small RON plugin file that runs shell
 commands, without writing Rust or recompiling.
 
-Status: early preview (0.1.0). It works and is usable day to day, but it still
+Status: early preview (0.1.1). It works and is usable day to day, but it still
 has rough edges. See [Known issues](#known-issues).
 
 ## Two pieces
