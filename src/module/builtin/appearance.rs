@@ -78,7 +78,7 @@ impl Module for AppearanceModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         self.read();
         Task::none()
     }

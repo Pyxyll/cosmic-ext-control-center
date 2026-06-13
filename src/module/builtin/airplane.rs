@@ -16,6 +16,28 @@ pub struct AirplaneModule {
     available: bool,
 }
 
+#[derive(Default)]
+struct AirplaneData {
+    on: bool,
+    available: bool,
+}
+
+/// Read airplane state off the UI thread.
+fn fetch() -> AirplaneData {
+    let mut d = AirplaneData::default();
+    if let Some(o) = super::out("rfkill list") {
+        // One "Soft blocked: yes/no" line per radio; airplane is on when every
+        // radio is soft-blocked.
+        let softs: Vec<bool> = o
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix("Soft blocked:").map(|v| v.trim() == "yes"))
+            .collect();
+        d.available = !softs.is_empty();
+        d.on = d.available && softs.iter().all(|&b| b);
+    }
+    d
+}
+
 impl AirplaneModule {
     pub fn new() -> Self {
         let mut m = Self {
@@ -29,25 +51,13 @@ impl AirplaneModule {
             on: false,
             available: false,
         };
-        m.read();
+        m.set(fetch());
         m
     }
 
-    fn read(&mut self) {
-        if let Some(o) = super::out("rfkill list") {
-            // One "Soft blocked: yes/no" line per radio; airplane is on when
-            // every radio is soft-blocked.
-            let softs: Vec<bool> = o
-                .lines()
-                .filter_map(|l| {
-                    l.trim()
-                        .strip_prefix("Soft blocked:")
-                        .map(|v| v.trim() == "yes")
-                })
-                .collect();
-            self.available = !softs.is_empty();
-            self.on = self.available && softs.iter().all(|&b| b);
-        }
+    fn set(&mut self, d: AirplaneData) {
+        self.on = d.on;
+        self.available = d.available;
     }
 }
 
@@ -80,8 +90,13 @@ impl Module for AirplaneModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+        super::fetch_task(id, fetch)
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<AirplaneData>() {
+            self.set(AirplaneData { on: d.on, available: d.available });
+        }
     }
 }

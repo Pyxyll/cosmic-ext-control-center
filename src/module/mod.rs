@@ -15,6 +15,26 @@ use std::time::{Duration, Instant};
 /// Unique id for a *placed* tile (one module type can be placed many times).
 pub type InstanceId = u32;
 
+/// An opaque, thread-safe payload carrying a module's freshly-fetched data back
+/// from a background refresh to the UI thread (delivered via
+/// `Message::StateLoaded`, applied by `Module::apply`). Each module boxes its
+/// own data type and downcasts it on the way in. The manual `Debug`/`Clone`
+/// keep `Message`'s derives working (`dyn Any` is neither).
+#[derive(Clone)]
+pub struct Payload(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl Payload {
+    pub fn new<T: std::any::Any + Send + Sync>(data: T) -> Self {
+        Payload(std::sync::Arc::new(data))
+    }
+}
+
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Payload(..)")
+    }
+}
+
 /// How long a `ValueAnim` takes to ease to a new target. Snappy but visible.
 const ANIM_DUR: Duration = Duration::from_millis(260);
 
@@ -181,10 +201,20 @@ pub trait Module {
         Subscription::none()
     }
 
-    /// Poll current state (e.g. on open). Default: nothing.
-    fn refresh(&mut self) -> Task<Message> {
+    /// Poll current state. A module with cheap I/O (e.g. sysmon reading /proc)
+    /// may update itself synchronously here and return `Task::none()`; one with
+    /// blocking I/O (subprocess, D-Bus) should instead return a `Task` that runs
+    /// the work off the UI thread (see `builtin::fetch_task`) and delivers the
+    /// result to `apply` via `Message::StateLoaded`. `id` tags that result.
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         Task::none()
     }
+
+    /// Apply data produced by a background `refresh`. The module downcasts the
+    /// payload to its own data type and updates its cached state. Default: no-op
+    /// (synchronous modules don't use this path). Named `apply_data`, not
+    /// `apply`, to dodge the `Apply` blanket method `cosmic::prelude` adds.
+    fn apply_data(&mut self, _data: &dyn std::any::Any) {}
 
     /// Per-instance settings to persist (e.g. {"mount": "/home"}). Empty means
     /// the module is stateless and the same wherever it's placed.

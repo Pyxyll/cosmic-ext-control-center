@@ -344,3 +344,18 @@ pub(crate) fn run(cmd: &str) {
     }
     let _ = Command::new("sh").arg("-c").arg(cmd).spawn();
 }
+
+/// Run a module's blocking fetch `f` on tokio's blocking pool (off the UI
+/// thread) and deliver the result to the instance's `apply` via
+/// `Message::StateLoaded`. `D::default()` is used if the worker panics. This is
+/// how subprocess/D-Bus modules refresh without hitching the UI.
+pub(crate) fn fetch_task<D, F>(id: InstanceId, f: F) -> cosmic::app::Task<Message>
+where
+    D: std::any::Any + Send + Sync + Default,
+    F: FnOnce() -> D + Send + 'static,
+{
+    cosmic::task::future(async move {
+        let data = tokio::task::spawn_blocking(f).await.unwrap_or_default();
+        cosmic::action::app(Message::StateLoaded(id, crate::module::Payload::new(data)))
+    })
+}

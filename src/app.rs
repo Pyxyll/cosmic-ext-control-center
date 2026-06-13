@@ -5,8 +5,8 @@
 use crate::config::{Config, InstanceConfig};
 use crate::module::manifest::{Manifest, ManifestModule};
 use crate::module::{
-    ControlValue, GRID_GAP, GRID_UNIT, InstanceId, ListEntry, Module, ModuleDescriptor, TileSize,
-    ValueAnim, builtin,
+    ControlValue, GRID_GAP, GRID_UNIT, InstanceId, ListEntry, Module, ModuleDescriptor, Payload,
+    TileSize, ValueAnim, builtin,
 };
 use crate::plugins;
 use crate::theme;
@@ -55,6 +55,10 @@ pub struct Hub {
     expand_open: bool,
     /// Animated drawer height in px (eases the inline list in and out).
     expand_anim: ValueAnim,
+    /// A scan for the open drawer is in flight (shows a spinner; cleared when its
+    /// results arrive). Only set for user-initiated scans (open / manual
+    /// refresh), not the silent background poll.
+    expand_loading: bool,
     /// Latest battery reading (percent, charging?), refreshed on poll. `None`
     /// on desktops with no battery — the readout is simply hidden.
     battery: Option<(u8, bool)>,
@@ -80,11 +84,14 @@ pub enum Message {
     /// Toggle a tile's inline selection list (Wi-Fi networks, devices, VPN
     /// profiles). Expanding triggers a one-off scan of that module.
     Expand(InstanceId),
+    /// Manually re-scan the open drawer's list (the refresh button), showing the
+    /// loading spinner until results arrive.
+    RefreshEntries(InstanceId),
     Reordered(Vec<InstanceId>),
     /// A module control changed: (instance, control id, new value).
     Control(InstanceId, String, ControlValue),
-    /// Async state arrived for a module (reserved for async polling).
-    StateLoaded(InstanceId, String, ControlValue),
+    /// A module's background refresh finished; its data is applied to the tile.
+    StateLoaded(InstanceId, Payload),
     /// Periodic tick — refresh polled module state (e.g. manifest `get`s).
     Poll,
     /// ~60fps tick while a module is animating (drives the redraw; no-op state).
@@ -570,6 +577,7 @@ impl Hub {
             expanded: None,
             expand_open: false,
             expand_anim: ValueAnim::new(0.0),
+            expand_loading: false,
             battery: read_battery(),
             redraw_until: None,
         };
@@ -602,6 +610,7 @@ impl Hub {
         self.expanded = None;
         self.expand_open = false;
         self.expand_anim = ValueAnim::new(0.0);
+        self.expand_loading = false;
         let fresh = Config::load();
         if fresh.instances == self.config.instances {
             return;
@@ -720,12 +729,18 @@ impl Hub {
     fn selection_panel<'a>(&'a self, inst: &'a Instance) -> Element<'a, Message> {
         let id = inst.id;
         let desc = inst.module.descriptor();
-        let header = widget::Row::new()
+        let mut header = widget::Row::new()
             .spacing(8)
             .align_y(Alignment::Center)
             .push(widget::icon::from_name(desc.icon.as_str()).size(18))
             .push(widget::text::body(desc.name.clone()))
-            .push(widget::space::horizontal())
+            .push(widget::space::horizontal());
+        // A spinner while a scan is in flight, a manual refresh, then close.
+        if self.expand_loading {
+            header = header.push(widget::progress_bar::indeterminate_circular().size(16.0));
+        }
+        let header = header
+            .push(round_btn("view-refresh-symbolic", Message::RefreshEntries(id)))
             .push(round_btn("window-close-symbolic", Message::Expand(id)));
 
         let entries = inst.module.entries();
@@ -910,40 +925,47 @@ impl Hub {
             }
             Message::Expand(id) => {
                 // Toggle: tapping the open tile's chevron animates it closed;
-                // otherwise populate + animate open (the `Frame` reap clears
-                // `expanded` once a close finishes).
+                // otherwise flag the module to include its list and animate open.
+                // The `expand` control sets that flag; the list itself is fetched
+                // off-thread by the dispatched refresh (and re-measured in
+                // StateLoaded once it arrives).
                 if self.expanded == Some(id) && self.expand_open {
                     self.expand_open = false;
+                    self.expand_loading = false;
                     self.expand_anim.set(0.0);
+                    if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                        let _ = inst.module.on_control("expand", ControlValue::Bool(false));
+                    }
+                    self.bump_redraw();
                 } else if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-                    // Populate the list on demand (the scan runs here, not in view).
-                    let _ = inst.module.on_control("expand", ControlValue::Trigger);
-                    let height = drawer_target(inst.module.as_ref());
+                    let _ = inst.module.on_control("expand", ControlValue::Bool(true));
                     self.expanded = Some(id);
                     self.expand_open = true;
-                    self.expand_anim.set(height);
+                    self.expand_loading = true;
+                    self.expand_anim.set(drawer_target(inst.module.as_ref()));
+                    let task = inst.module.refresh(id);
+                    self.bump_redraw();
+                    return task;
                 }
-                self.bump_redraw();
+            }
+            Message::RefreshEntries(id) => {
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    self.expand_loading = true;
+                    let task = inst.module.refresh(id);
+                    self.bump_redraw();
+                    return task;
+                }
             }
             Message::Reordered(order) => self.reorder(order),
             Message::Poll => {
-                // Re-read polled state for every module (built-ins no-op).
-                for inst in &mut self.instances {
-                    let _ = inst.module.refresh();
-                }
-                // Keep an open selection list fresh (re-scan its targets) and
-                // track its height as the entry count changes.
-                if self.expand_open {
-                    if let Some(inst) = self
-                        .expanded
-                        .and_then(|eid| self.instances.iter_mut().find(|i| i.id == eid))
-                    {
-                        let _ = inst.module.on_control("expand", ControlValue::Trigger);
-                        let height = drawer_target(inst.module.as_ref());
-                        self.expand_anim.set(height);
-                    }
-                }
+                // Each module refreshes off the UI thread (cheap sync modules
+                // just update themselves and return Task::none()). The expanded
+                // module also re-scans its list, since its "wants entries" flag
+                // is set — no separate synchronous rescan needed.
+                let tasks: Vec<_> =
+                    self.instances.iter_mut().map(|i| i.module.refresh(i.id)).collect();
                 self.battery = read_battery();
+                return Task::batch(tasks);
             }
             // The message itself drives a redraw; animated values interpolate
             // off the wall clock in their own view(). Also reap any tile whose
@@ -982,10 +1004,26 @@ impl Hub {
                     return task;
                 }
             }
-            Message::StateLoaded(id, control, value) => {
+            Message::StateLoaded(id, payload) => {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-                    let _ = inst.module.on_control(&control, value);
+                    inst.module.apply_data(payload.0.as_ref());
                 }
+                // Results arrived for the open drawer — stop the spinner and
+                // re-measure so it animates to fit the now-populated list.
+                if self.expanded == Some(id) {
+                    self.expand_loading = false;
+                }
+                if self.expand_open && self.expanded == Some(id) {
+                    let h = self
+                        .instances
+                        .iter()
+                        .find(|i| i.id == id)
+                        .map(|i| drawer_target(i.module.as_ref()));
+                    if let Some(h) = h {
+                        self.expand_anim.set(h);
+                    }
+                }
+                self.bump_redraw();
             }
         }
         Task::none()
@@ -1005,6 +1043,7 @@ impl Hub {
             .redraw_until
             .is_some_and(|t| std::time::Instant::now() < t);
         let animating = self.expand_anim.animating()
+            || self.expand_loading // keep ticking so the spinner spins
             || self.instances.iter().any(|i| i.module.animating() || i.width.animating());
         if bursting || animating {
             subs.push(time::every(Duration::from_millis(16)).map(|_| Message::Frame));

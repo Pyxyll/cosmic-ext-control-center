@@ -13,14 +13,18 @@ pub struct WifiModule {
     ssid: Option<String>,
     /// Negotiated link rate in Mb/s for the active connection, if any.
     rate: Option<u32>,
-    /// Networks for the inline selection list, populated on expand.
+    /// Networks for the inline selection list, populated when expanded.
     nets: Vec<Net>,
+    /// Whether the drawer is open, so the (slower) network scan is only fetched
+    /// when it's actually shown.
+    want_entries: bool,
     /// SSID awaiting a password (a new secured network), and the typed value.
     pending: Option<String>,
     password: String,
 }
 
 /// One scanned network.
+#[derive(Clone, Default)]
 struct Net {
     ssid: String,
     signal: u32,
@@ -29,6 +33,40 @@ struct Net {
     secured: bool,
     /// A saved NM connection exists, so it connects without a prompt.
     known: bool,
+}
+
+/// A snapshot fetched off the UI thread, then applied to the module.
+#[derive(Default)]
+struct WifiData {
+    on: bool,
+    available: bool,
+    ssid: Option<String>,
+    rate: Option<u32>,
+    nets: Vec<Net>,
+}
+
+/// Gather Wi-Fi state off the UI thread. `want_entries` adds the network scan
+/// (only when the picker is open).
+fn fetch(want_entries: bool) -> WifiData {
+    let mut d = WifiData::default();
+    if let Some(o) = super::out("nmcli radio wifi") {
+        d.on = o.trim() == "enabled";
+        d.available = true;
+    }
+    // Active SSID, if connected: the "yes:<ssid>" line.
+    d.ssid = super::out("nmcli -t -f active,ssid dev wifi").and_then(|o| {
+        o.lines()
+            .find_map(|l| l.strip_prefix("yes:").map(str::to_string))
+            .filter(|s| !s.is_empty())
+    });
+    // Link rate of the active AP (queried separately from the SSID so an SSID
+    // containing ':' can't break field parsing).
+    d.rate = super::out("nmcli -t -f active,rate dev wifi")
+        .and_then(|o| o.lines().find_map(|l| l.strip_prefix("yes:").and_then(parse_rate)));
+    if want_entries {
+        d.nets = scan_networks();
+    }
+    d
 }
 
 /// Available networks via `nmcli`, strongest-signal-per-SSID, active first.
@@ -118,29 +156,24 @@ impl WifiModule {
             ssid: None,
             rate: None,
             nets: Vec::new(),
+            want_entries: false,
             pending: None,
             password: String::new(),
         };
-        m.read();
+        m.set(fetch(false)); // one-time synchronous read so the tile opens populated
         m
     }
 
-    fn read(&mut self) {
-        if let Some(o) = super::out("nmcli radio wifi") {
-            self.on = o.trim() == "enabled";
-            self.available = true;
+    /// Apply a fetched snapshot to the cached state.
+    fn set(&mut self, d: WifiData) {
+        self.on = d.on;
+        self.available = d.available;
+        self.ssid = d.ssid;
+        self.rate = d.rate;
+        // Keep the existing list when this refresh didn't scan (drawer closed).
+        if self.want_entries {
+            self.nets = d.nets;
         }
-        // Active SSID, if connected: the "yes:<ssid>" line.
-        self.ssid = super::out("nmcli -t -f active,ssid dev wifi").and_then(|o| {
-            o.lines()
-                .find_map(|l| l.strip_prefix("yes:").map(str::to_string))
-                .filter(|s| !s.is_empty())
-        });
-        // Link rate of the active AP (queried separately from the SSID so an
-        // SSID containing ':' can't break field parsing).
-        self.rate = super::out("nmcli -t -f active,rate dev wifi").and_then(|o| {
-            o.lines().find_map(|l| l.strip_prefix("yes:").and_then(parse_rate))
-        });
     }
 }
 
@@ -182,8 +215,20 @@ impl Module for WifiModule {
                 }
             }
             "settings" => super::run("cosmic-settings network"),
-            // Inline picker: scan on expand, connect on select.
-            "expand" => self.nets = scan_networks(),
+            // Drawer open/close: flag whether the (slower) scan is fetched; the
+            // hub dispatches the actual async refresh.
+            "expand" => {
+                if let ControlValue::Bool(b) = value {
+                    self.want_entries = b;
+                    // Keep the cached list while the drawer animates closed (the
+                    // flag already stops it refreshing); clearing it here made an
+                    // empty "Nothing available" flash mid-close. Just drop any
+                    // half-entered password.
+                    if !b {
+                        self.pending = None;
+                    }
+                }
+            }
             "select" => {
                 if let ControlValue::Text(ssid) = value {
                     let net = self.nets.iter().find(|n| n.ssid == ssid);
@@ -248,8 +293,21 @@ impl Module for WifiModule {
             .map(|ssid| (ssid.clone(), self.password.clone()))
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+        let want_entries = self.want_entries;
+        super::fetch_task(id, move || fetch(want_entries))
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<WifiData>() {
+            // Clone out of the shared payload into our cached state.
+            self.set(WifiData {
+                on: d.on,
+                available: d.available,
+                ssid: d.ssid.clone(),
+                rate: d.rate,
+                nets: d.nets.clone(),
+            });
+        }
     }
 }

@@ -14,8 +14,32 @@ pub struct VpnModule {
     /// Connection to act on: the active VPN when on, else the first configured
     /// one. `None` when no NM VPN exists.
     name: Option<String>,
-    /// Profiles for the inline selection list, populated on expand.
+    /// Profiles for the inline selection list, populated when expanded.
     entries: Vec<ListEntry>,
+    /// Whether the drawer is open (so the profile list is only scanned then).
+    want_entries: bool,
+}
+
+/// A snapshot fetched off the UI thread.
+#[derive(Default)]
+struct VpnData {
+    on: bool,
+    name: Option<String>,
+    entries: Vec<ListEntry>,
+}
+
+/// Gather VPN state off the UI thread. `want_entries` adds the profile list.
+fn fetch(want_entries: bool) -> VpnData {
+    let active =
+        super::out("nmcli -t -f NAME,TYPE connection show --active").and_then(|o| first_vpn(&o));
+    let configured =
+        super::out("nmcli -t -f NAME,TYPE connection show").and_then(|o| first_vpn(&o));
+    VpnData {
+        on: active.is_some(),
+        // Toggle target: the active VPN when connected, else the first set up.
+        name: active.or(configured),
+        entries: if want_entries { scan_profiles() } else { Vec::new() },
+    }
 }
 
 /// Truncate a long label to fit a tile, with an ellipsis.
@@ -84,19 +108,18 @@ impl VpnModule {
             on: false,
             name: None,
             entries: Vec::new(),
+            want_entries: false,
         };
-        m.read();
+        m.set(fetch(false));
         m
     }
 
-    fn read(&mut self) {
-        let active = super::out("nmcli -t -f NAME,TYPE connection show --active")
-            .and_then(|o| first_vpn(&o));
-        let configured =
-            super::out("nmcli -t -f NAME,TYPE connection show").and_then(|o| first_vpn(&o));
-        self.on = active.is_some();
-        // Toggle target: the active VPN when connected, else the first set up.
-        self.name = active.or(configured);
+    fn set(&mut self, d: VpnData) {
+        self.on = d.on;
+        self.name = d.name;
+        if self.want_entries {
+            self.entries = d.entries;
+        }
     }
 }
 
@@ -134,8 +157,14 @@ impl Module for VpnModule {
                 }
             }
             "settings" => super::run("cosmic-settings network"),
-            // Inline picker: list profiles on expand, toggle the chosen one on select.
-            "expand" => self.entries = scan_profiles(),
+            // Drawer open/close: flag whether the profile list is fetched.
+            "expand" => {
+                // Keep the cached list while the drawer animates closed (the flag
+                // stops it refreshing) so an empty state doesn't flash mid-close.
+                if let ControlValue::Bool(b) = value {
+                    self.want_entries = b;
+                }
+            }
             "select" => {
                 if let ControlValue::Text(name) = value {
                     let action = if active_vpns().contains(&name) { "down" } else { "up" };
@@ -156,8 +185,19 @@ impl Module for VpnModule {
         self.entries.clone()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+        let want_entries = self.want_entries;
+        super::fetch_task(id, move || fetch(want_entries))
     }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<VpnData>() {
+            self.set(VpnData {
+                on: d.on,
+                name: d.name.clone(),
+                entries: d.entries.clone(),
+            });
+        }
+    }
+
 }

@@ -332,7 +332,7 @@ impl Module for CpuModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         self.read();
         Task::none()
     }
@@ -374,7 +374,7 @@ impl Module for RamModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         if let Some(r) = read_ram() {
             self.value.set(r);
             push_hist(&mut self.hist, r);
@@ -424,7 +424,7 @@ impl Module for GpuModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         if let Some(p) = &self.path {
             if let Some(g) = read_gpu(p) {
                 self.value.set(g);
@@ -490,7 +490,7 @@ impl Module for DiskModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         self.read();
         Task::none()
     }
@@ -603,7 +603,7 @@ impl Module for SysMonModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         if let Some((total, idle)) = read_cpu_times() {
             if let Some((pt, pi)) = self.prev {
                 let dt = total.saturating_sub(pt);

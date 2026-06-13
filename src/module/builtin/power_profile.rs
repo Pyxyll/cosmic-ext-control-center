@@ -96,17 +96,35 @@ impl PowerProfileModule {
         }
         // Cycle in ascending-power order regardless of how the daemon lists them.
         m.profiles.sort_by_key(|p| rank(p));
-        m.read();
+        m.set(fetch());
         m
     }
 
-    fn read(&mut self) {
-        if let Some(c) = super::out("powerprofilesctl get") {
-            self.current = c;
+    fn set(&mut self, d: PpData) {
+        if d.available {
+            self.current = d.current;
             self.available = true;
         }
-        self.freq_ghz = read_freq_ghz();
+        self.freq_ghz = d.freq_ghz;
     }
+}
+
+/// A snapshot fetched off the UI thread.
+#[derive(Default)]
+struct PpData {
+    current: String,
+    available: bool,
+    freq_ghz: Option<f32>,
+}
+
+fn fetch() -> PpData {
+    let mut d = PpData::default();
+    if let Some(c) = super::out("powerprofilesctl get") {
+        d.current = c;
+        d.available = true;
+    }
+    d.freq_ghz = read_freq_ghz();
+    d
 }
 
 impl Module for PowerProfileModule {
@@ -154,8 +172,17 @@ impl Module for PowerProfileModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+        super::fetch_task(id, fetch)
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<PpData>() {
+            self.set(PpData {
+                current: d.current.clone(),
+                available: d.available,
+                freq_ghz: d.freq_ghz,
+            });
+        }
     }
 }

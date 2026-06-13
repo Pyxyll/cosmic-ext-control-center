@@ -26,6 +26,10 @@ bytemuck = { version = "1", features = ["derive"] }
 libc = "0.2"
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
+# Module refresh runs its blocking I/O (subprocess spawns, D-Bus, image decode)
+# on tokio's blocking pool via spawn_blocking, off the UI thread. The runtime is
+# cosmic's (the `tokio` libcosmic feature); we just submit blocking work to it.
+tokio = { version = "1", features = ["rt"] }
 # Media module: D-Bus MPRIS via the blocking API (own internal executor, so it
 # doesn't fight cosmic's tokio runtime in the sync poll). image: decode artwork.
 zbus = "5"

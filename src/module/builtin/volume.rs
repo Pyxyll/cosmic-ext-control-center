@@ -1,9 +1,7 @@
 //! A REAL built-in: system volume via `wpctl` (PipeWire/WirePlumber, always
 //! present on COSMIC). Proves a built-in can drive live system state, not just
-//! hold demo values.
-//!
-//! Phase-1 simplification: reads/writes synchronously via `wpctl` (fast, a few
-//! ms). A later pass moves this to async polling so the UI never blocks.
+//! hold demo values. Reads happen off the UI thread (async refresh); writes are
+//! fire-and-forget, so neither blocks the popup.
 
 use crate::app::Message;
 use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, TileSize};
@@ -20,6 +18,31 @@ pub struct VolumeModule {
     available: bool,
 }
 
+#[derive(Default)]
+struct VolData {
+    value: f32,
+    muted: bool,
+    available: bool,
+}
+
+/// Parse `wpctl get-volume @DEFAULT_AUDIO_SINK@` → "Volume: 0.45 [MUTED]".
+fn fetch() -> VolData {
+    let mut d = VolData::default();
+    if let Ok(out) = Command::new("wpctl").args(["get-volume", SINK]).output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout);
+            if let Some(num) = s.split_whitespace().nth(1) {
+                if let Ok(v) = num.parse::<f32>() {
+                    d.value = v.clamp(0.0, 1.5);
+                    d.muted = s.contains("[MUTED]");
+                    d.available = true;
+                }
+            }
+        }
+    }
+    d
+}
+
 impl VolumeModule {
     pub fn new() -> Self {
         let mut m = Self {
@@ -34,30 +57,23 @@ impl VolumeModule {
             muted: false,
             available: false,
         };
-        m.read();
+        m.set(fetch());
         m
     }
 
-    /// Parse `wpctl get-volume @DEFAULT_AUDIO_SINK@` → "Volume: 0.45 [MUTED]".
-    fn read(&mut self) {
-        if let Ok(out) = Command::new("wpctl").args(["get-volume", SINK]).output() {
-            if out.status.success() {
-                let s = String::from_utf8_lossy(&out.stdout);
-                if let Some(num) = s.split_whitespace().nth(1) {
-                    if let Ok(v) = num.parse::<f32>() {
-                        self.value = v.clamp(0.0, 1.5);
-                        self.muted = s.contains("[MUTED]");
-                        self.available = true;
-                    }
-                }
-            }
+    fn set(&mut self, d: VolData) {
+        // Keep the default until wpctl actually answers.
+        if d.available {
+            self.value = d.value;
+            self.muted = d.muted;
+            self.available = true;
         }
     }
 
     fn write(&self, v: f32) {
         let _ = Command::new("wpctl")
             .args(["set-volume", SINK, &format!("{v:.2}")])
-            .status();
+            .spawn();
     }
 }
 
@@ -105,7 +121,7 @@ impl Module for VolumeModule {
                 if self.available {
                     let _ = Command::new("wpctl")
                         .args(["set-mute", SINK, if b { "1" } else { "0" }])
-                        .status();
+                        .spawn();
                 }
             }
             _ => {}

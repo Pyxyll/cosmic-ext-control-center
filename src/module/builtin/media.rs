@@ -98,6 +98,32 @@ fn apply_rounded_mask(img: &mut image::RgbaImage, radius: f32) {
     }
 }
 
+/// A snapshot fetched off the UI thread: player state plus, when the track's
+/// artwork changed, the decoded (sharp, blurred) handles. The D-Bus query and
+/// the image decode/blur are the slow parts this keeps off the UI thread.
+#[derive(Default, Clone)]
+struct MediaData {
+    state: MprisState,
+    art: Option<(String, Handle, Handle)>,
+}
+
+fn fetch(conn: Option<Connection>, cur_art_path: Option<String>) -> MediaData {
+    let mut d = MediaData::default();
+    if let Some(c) = &conn {
+        if let Ok(s) = mpris::fetch_state(c) {
+            d.state = s;
+        }
+    }
+    if let Some(p) = d.state.art_path.clone() {
+        if cur_art_path.as_deref() != Some(p.as_str()) {
+            if let Some((sharp, blurred)) = load_art(&p) {
+                d.art = Some((p, sharp, blurred));
+            }
+        }
+    }
+    d
+}
+
 impl MediaModule {
     /// COSMIC-styled media tile (plain card) — the default.
     pub fn new() -> Self {
@@ -135,20 +161,17 @@ impl MediaModule {
     }
 
     fn read(&mut self) {
-        if let Some(c) = &self.conn {
-            if let Ok(s) = mpris::fetch_state(c) {
-                self.state = s;
-            }
-        }
-        // Reload art only when the path changes; keep the last art if a player
-        // briefly drops artUrl during a track transition.
-        if let Some(p) = self.state.art_path.clone() {
-            let unchanged = self.art.as_ref().map(|(c, ..)| c == &p).unwrap_or(false);
-            if !unchanged {
-                if let Some((sharp, blurred)) = load_art(&p) {
-                    self.art = Some((p, sharp, blurred));
-                }
-            }
+        let cur = self.art.as_ref().map(|(p, ..)| p.clone());
+        let d = fetch(self.conn.clone(), cur);
+        self.set(d);
+    }
+
+    fn set(&mut self, d: MediaData) {
+        self.state = d.state;
+        // Only replace art when the fetch loaded new artwork; otherwise keep the
+        // last (a player can briefly drop artUrl mid-transition).
+        if let Some(art) = d.art {
+            self.art = Some(art);
         }
     }
 
@@ -371,9 +394,16 @@ impl Module for MediaModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+        let conn = self.conn.clone();
+        let cur = self.art.as_ref().map(|(p, ..)| p.clone());
+        super::fetch_task(id, move || fetch(conn, cur))
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<MediaData>() {
+            self.set(d.clone());
+        }
     }
 }
 
