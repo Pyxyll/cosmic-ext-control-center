@@ -21,6 +21,9 @@ path = "src/bin/applet.rs"
 
 [dependencies]
 bytemuck = { version = "1", features = ["derive"] }
+# Disk gauge: statvfs(2) for filesystem usage — a cheap syscall, so the sysmon
+# tiles stay subprocess-free like the /proc readers.
+libc = "0.2"
 ron = "0.8"
 serde = { version = "1", features = ["derive"] }
 # Media module: D-Bus MPRIS via the blocking API (own internal executor, so it

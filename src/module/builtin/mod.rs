@@ -29,7 +29,7 @@ pub use divider::DividerModule;
 pub use media::MediaModule;
 pub use microphone::MicrophoneModule;
 pub use power_profile::PowerProfileModule;
-pub use sysmon::{CpuModule, GpuModule, RamModule};
+pub use sysmon::{CpuModule, DiskModule, GpuModule, RamModule, SysMonModule};
 pub use volume::VolumeModule;
 pub use vpn::VpnModule;
 pub use wifi::WifiModule;
@@ -40,6 +40,7 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
         VolumeModule::new().descriptor().clone(),
         MicrophoneModule::new().descriptor().clone(),
         MediaModule::new().descriptor().clone(),
+        MediaModule::new_framed().descriptor().clone(),
         PowerProfileModule::new().descriptor().clone(),
         WifiModule::new().descriptor().clone(),
         VpnModule::new().descriptor().clone(),
@@ -50,15 +51,19 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
         CpuModule::new().descriptor().clone(),
         GpuModule::new().descriptor().clone(),
         RamModule::new().descriptor().clone(),
+        DiskModule::new().descriptor().clone(),
+        SysMonModule::new().descriptor().clone(),
     ]
 }
 
-/// Instantiate a built-in by its module id. Returns None for unknown ids.
-pub fn make(id: &str) -> Option<Box<dyn Module>> {
+/// Instantiate a built-in by its module id, seeding any saved per-instance
+/// params (e.g. a disk gauge's mount). Returns None for unknown ids.
+pub fn make(id: &str, params: &std::collections::BTreeMap<String, String>) -> Option<Box<dyn Module>> {
     match id {
         "builtin.volume" => Some(Box::new(VolumeModule::new())),
         "builtin.microphone" => Some(Box::new(MicrophoneModule::new())),
         "builtin.media" => Some(Box::new(MediaModule::new())),
+        "builtin.media_art" => Some(Box::new(MediaModule::new_framed())),
         "builtin.power_profile" => Some(Box::new(PowerProfileModule::new())),
         "builtin.wifi" => Some(Box::new(WifiModule::new())),
         "builtin.vpn" => Some(Box::new(VpnModule::new())),
@@ -69,6 +74,10 @@ pub fn make(id: &str) -> Option<Box<dyn Module>> {
         "builtin.cpu" => Some(Box::new(CpuModule::new())),
         "builtin.gpu" => Some(Box::new(GpuModule::new())),
         "builtin.ram" => Some(Box::new(RamModule::new())),
+        "builtin.disk" => Some(Box::new(DiskModule::with_mount(
+            params.get("mount").cloned().unwrap_or_else(|| "/".to_string()),
+        ))),
+        "builtin.sysmon" => Some(Box::new(SysMonModule::new())),
         _ => None,
     }
 }

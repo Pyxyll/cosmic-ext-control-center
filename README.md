@@ -29,9 +29,9 @@ editor window where you add, remove, reorder, and resize tiles from the palette.
 ## Modules
 
 Volume, Microphone, Media (MPRIS), Wi-Fi (SSID and link rate), VPN, Bluetooth,
-Airplane mode, Power profile, Appearance (light/dark), CPU/GPU/RAM gauges,
-battery readout, section divider, and session/power actions (lock, sleep, log
-out, restart, shut down).
+Airplane mode, Power profile, Appearance (light/dark), CPU/GPU/RAM/Disk gauges,
+a combined system monitor, battery readout, section divider, and session/power
+actions (lock, sleep, log out, restart, shut down).
 
 ## Install
 
@@ -109,9 +109,9 @@ Tile resizing is uneven. Not every module lays out cleanly at every column
 width, so some tiles look cramped or clip their contents at certain sizes.
 Per-module layout across the size range still needs work.
 
-The media player tile uses a custom look (a blurred album-art backdrop) that
-does not match the COSMIC design system. It reflects a personal styling
-preference. A version that follows the COSMIC design is planned.
+The media player comes in two styles, each a separate palette entry: "Media"
+follows the COSMIC design system (a plain card) and is the default, while
+"Media (album art)" uses the custom blurred album-art backdrop.
 
 ## Built with
 

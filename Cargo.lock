@@ -919,6 +919,7 @@ dependencies = [
  "bytemuck",
  "cosmic-config",
  "image",
+ "libc",
  "libcosmic",
  "ron 0.8.1",
  "serde",
