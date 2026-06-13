@@ -8,6 +8,10 @@
 
 use crate::app::{Hub, Message};
 use cosmic::app::{Core, Task};
+use cosmic::applet::token::subscription::{
+    TokenRequest, TokenUpdate, activation_token_subscription,
+};
+use cosmic::cctk::sctk::reexports::calloop::channel::Sender;
 use cosmic::iced::window::Id;
 use cosmic::iced::{Limits, Subscription};
 use cosmic::prelude::*;
@@ -24,6 +28,9 @@ pub struct Applet {
     core: Core,
     popup: Option<Id>,
     hub: Hub,
+    /// Channel to request a Wayland activation token (for launching the editor
+    /// so it can raise its window). Set once the token subscription initializes.
+    token_tx: Option<Sender<TokenRequest>>,
 }
 
 impl cosmic::Application for Applet {
@@ -46,6 +53,7 @@ impl cosmic::Application for Applet {
                 core,
                 popup: None,
                 hub: Hub::new(false),
+                token_tx: None,
             },
             Task::none(),
         )
@@ -56,11 +64,13 @@ impl cosmic::Application for Applet {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // Only run the hub's poll/animation timers while the popup is open.
+        // Always listen for activation-token requests; add the hub's poll/anim
+        // timers only while the popup is open.
+        let token = activation_token_subscription(0).map(Message::Token);
         if self.popup.is_some() {
-            self.hub.subscription()
+            Subscription::batch([self.hub.subscription(), token])
         } else {
-            Subscription::none()
+            token
         }
     }
 
@@ -129,6 +139,36 @@ impl cosmic::Application for Applet {
             Message::PopupClosed(id) => {
                 if self.popup == Some(id) {
                     self.popup = None;
+                }
+                Task::none()
+            }
+            // The gear: request an activation token, then launch the editor with
+            // it (so the editor's single-instance handler can raise its window).
+            // We're handling a user click, so the compositor should grant one.
+            Message::OpenConfig => {
+                if let Some(tx) = &self.token_tx {
+                    let _ = tx.send(TokenRequest {
+                        app_id: crate::config::APP_ID.to_string(),
+                        exec: "cosmic-control-center".to_string(),
+                    });
+                } else {
+                    // No token channel yet — launch without one (won't raise).
+                    let _ = std::process::Command::new("cosmic-control-center").spawn();
+                }
+                Task::none()
+            }
+            Message::Token(update) => {
+                match update {
+                    TokenUpdate::Init(tx) => self.token_tx = Some(tx),
+                    TokenUpdate::ActivationToken { token, exec } => {
+                        let mut cmd = std::process::Command::new(&exec);
+                        if let Some(token) = token {
+                            cmd.env("XDG_ACTIVATION_TOKEN", &token);
+                            cmd.env("DESKTOP_STARTUP_ID", &token);
+                        }
+                        let _ = cmd.spawn();
+                    }
+                    TokenUpdate::Finished => {}
                 }
                 Task::none()
             }

@@ -86,6 +86,9 @@ pub enum Message {
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
     PopupClosed(cosmic::iced::window::Id),
+    /// (applet) Activation-token subscription output, used to launch the editor
+    /// with a Wayland activation token so it can raise its window.
+    Token(cosmic::applet::token::subscription::TokenUpdate),
 }
 
 /// Session/power actions in the always-present footer.
@@ -632,7 +635,7 @@ impl Hub {
             }
             // Applet-only plumbing — handled by the Applet host, never reaches
             // the editor; arms here keep the match exhaustive.
-            Message::Surface(_) | Message::PopupClosed(_) => {}
+            Message::Surface(_) | Message::PopupClosed(_) | Message::Token(_) => {}
             Message::OpenPalette => {
                 self.palette_open = !self.palette_open;
                 self.bump_redraw();
