@@ -105,9 +105,10 @@ The plugin system is functional but experimental. For now it only supports
 `Cmd` actions and basic styling. D-Bus and HTTP actions, plus native-looking
 plugin tiles, are planned.
 
-Tile resizing is uneven. Not every module lays out cleanly at every column
-width, so some tiles look cramped or clip their contents at certain sizes.
-Per-module layout across the size range still needs work.
+Tile layout varies by column width: toggles collapse to an icon at 1col, the
+CPU/GPU/RAM gauges become history graphs at 3col and up, and the disk gauge
+becomes a capacity bar. A few tiles (such as the combined system monitor) still
+reuse one layout across sizes, so per-module polish across the range continues.
 
 The media player comes in two styles, each a separate palette entry: "Media"
 follows the COSMIC design system (a plain card) and is the default, while
