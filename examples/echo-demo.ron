@@ -1,4 +1,4 @@
-// A harmless demo plugin — drop into ~/.config/cosmic-control-center/plugins/
+// A harmless demo plugin — drop into ~/.config/cosmic-ext-control-center/plugins/
 // then add it from the control center's Edit → ＋ Add palette.
 //
 // Shows all four control types. Nothing here touches hardware:

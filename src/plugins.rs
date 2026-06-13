@@ -11,13 +11,13 @@ pub fn plugin_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Ok(home) = std::env::var("HOME") {
         dirs.push(PathBuf::from(format!(
-            "{home}/.config/cosmic-control-center/plugins"
+            "{home}/.config/cosmic-ext-control-center/plugins"
         )));
     }
     let xdg = std::env::var("XDG_DATA_DIRS")
         .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
     for d in xdg.split(':').filter(|s| !s.is_empty()) {
-        dirs.push(PathBuf::from(d).join("cosmic-control-center/plugins"));
+        dirs.push(PathBuf::from(d).join("cosmic-ext-control-center/plugins"));
     }
     dirs
 }

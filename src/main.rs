@@ -1,7 +1,7 @@
 //! The configuration **editor** window — sidebar to add modules + the live grid
 //! as the arrangement canvas. The runtime surface is the applet binary.
 
-use cosmic_control_center::app;
+use cosmic_ext_control_center::app;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -17,7 +17,7 @@ fn main() -> ExitCode {
     match cosmic::app::run_single_instance::<app::App>(settings, app::Flags) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("cosmic-control-center: {e}");
+            eprintln!("cosmic-ext-control-center: {e}");
             ExitCode::from(1)
         }
     }

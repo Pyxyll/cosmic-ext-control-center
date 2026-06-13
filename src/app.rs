@@ -654,7 +654,7 @@ impl Hub {
             }
             Message::OpenConfig => {
                 // The applet's gear: launch the companion editor window.
-                let _ = std::process::Command::new("cosmic-control-center").spawn();
+                let _ = std::process::Command::new("cosmic-ext-control-center").spawn();
             }
             // Applet-only plumbing — handled by the Applet host, never reaches
             // the editor; arms here keep the match exhaustive.

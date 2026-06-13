@@ -1,4 +1,4 @@
-name        := 'cosmic-control-center'
+name        := 'cosmic-ext-control-center'
 prefix      := '/usr'
 bin-dir     := prefix / 'bin'
 app-dir     := prefix / 'share' / 'applications'
@@ -12,23 +12,23 @@ build-release:
 
 # Build, then install everything to {{prefix}} (use sudo, or override prefix for packaging).
 install: build-release
-    install -Dm0755 target/release/cosmic-control-center \
-                    {{bin-dir}}/cosmic-control-center
-    install -Dm0755 target/release/cosmic-control-center-applet \
-                    {{bin-dir}}/cosmic-control-center-applet
-    install -Dm0644 resources/com.pyxyll.CosmicControlCenter.desktop \
-                    {{app-dir}}/com.pyxyll.CosmicControlCenter.desktop
-    install -Dm0644 resources/com.pyxyll.CosmicControlCenterApplet.desktop \
-                    {{app-dir}}/com.pyxyll.CosmicControlCenterApplet.desktop
-    install -Dm0644 resources/com.pyxyll.CosmicControlCenter.metainfo.xml \
-                    {{metainfo-dir}}/com.pyxyll.CosmicControlCenter.metainfo.xml
+    install -Dm0755 target/release/cosmic-ext-control-center \
+                    {{bin-dir}}/cosmic-ext-control-center
+    install -Dm0755 target/release/cosmic-ext-control-center-applet \
+                    {{bin-dir}}/cosmic-ext-control-center-applet
+    install -Dm0644 resources/com.pyxyll.CosmicExtControlCenter.desktop \
+                    {{app-dir}}/com.pyxyll.CosmicExtControlCenter.desktop
+    install -Dm0644 resources/com.pyxyll.CosmicExtControlCenterApplet.desktop \
+                    {{app-dir}}/com.pyxyll.CosmicExtControlCenterApplet.desktop
+    install -Dm0644 resources/com.pyxyll.CosmicExtControlCenter.metainfo.xml \
+                    {{metainfo-dir}}/com.pyxyll.CosmicExtControlCenter.metainfo.xml
 
 uninstall:
-    rm -f {{bin-dir}}/cosmic-control-center
-    rm -f {{bin-dir}}/cosmic-control-center-applet
-    rm -f {{app-dir}}/com.pyxyll.CosmicControlCenter.desktop
-    rm -f {{app-dir}}/com.pyxyll.CosmicControlCenterApplet.desktop
-    rm -f {{metainfo-dir}}/com.pyxyll.CosmicControlCenter.metainfo.xml
+    rm -f {{bin-dir}}/cosmic-ext-control-center
+    rm -f {{bin-dir}}/cosmic-ext-control-center-applet
+    rm -f {{app-dir}}/com.pyxyll.CosmicExtControlCenter.desktop
+    rm -f {{app-dir}}/com.pyxyll.CosmicExtControlCenterApplet.desktop
+    rm -f {{metainfo-dir}}/com.pyxyll.CosmicExtControlCenter.metainfo.xml
 
 clean:
     cargo clean

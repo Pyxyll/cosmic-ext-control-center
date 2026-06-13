@@ -1,4 +1,4 @@
-# cosmic-control-center
+# cosmic-ext-control-center
 
 A modular control center for the [COSMIC](https://system76.com/cosmic) desktop.
 
@@ -23,8 +23,8 @@ editor window where you add, remove, reorder, and resize tiles from the palette.
 
 | Binary | What it is |
 |---|---|
-| `cosmic-control-center` | The editor window. Add, remove, reorder, and resize tiles. Saves the layout to `cosmic-config`. |
-| `cosmic-control-center-applet` | The panel applet. A popup that shows your configured tiles, live and interactive. Its gear button opens the editor. |
+| `cosmic-ext-control-center` | The editor window. Add, remove, reorder, and resize tiles. Saves the layout to `cosmic-config`. |
+| `cosmic-ext-control-center-applet` | The panel applet. A popup that shows your configured tiles, live and interactive. Its gear button opens the editor. |
 
 ## Modules
 
@@ -38,13 +38,13 @@ actions (lock, sleep, log out, restart, shut down).
 ### Arch (AUR)
 
 ```sh
-paru -S cosmic-control-center        # or your preferred AUR helper
+paru -S cosmic-ext-control-center        # or your preferred AUR helper
 ```
 
 ### Debian and Fedora (prebuilt)
 
 Download the `.deb` or `.rpm` from the
-[latest release](https://github.com/Pyxyll/cosmic-control-center/releases/latest)
+[latest release](https://github.com/Pyxyll/cosmic-ext-control-center/releases/latest)
 and install it with your package manager. A static-binary `.tar.gz` is also
 attached for other distributions.
 
@@ -53,8 +53,8 @@ attached for other distributions.
 Needs the Rust toolchain and [`just`](https://github.com/casey/just).
 
 ```sh
-git clone https://github.com/Pyxyll/cosmic-control-center
-cd cosmic-control-center
+git clone https://github.com/Pyxyll/cosmic-ext-control-center
+cd cosmic-ext-control-center
 sudo just install                    # builds release and installs to /usr
 ```
 
@@ -68,7 +68,7 @@ editor, which also shows up in your app launcher as "Control Center".
 
 ## Plugins
 
-A plugin is a single `.ron` file in `~/.config/cosmic-control-center/plugins/`.
+A plugin is a single `.ron` file in `~/.config/cosmic-ext-control-center/plugins/`.
 It describes a tile and a list of controls, each bound to shell commands:
 
 ```ron
