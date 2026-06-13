@@ -65,6 +65,9 @@ pub enum Message {
     RemoveInstance(InstanceId),
     /// Cycle a tile's size (Normal ↔ Wide) in edit mode.
     ResizeInstance(InstanceId),
+    /// Pick a tile's configurable option in the editor (e.g. a disk gauge's
+    /// mount): (instance, index into the module's `option_choices`).
+    SetOption(InstanceId, usize),
     Reordered(Vec<InstanceId>),
     /// A module control changed: (instance, control id, new value).
     Control(InstanceId, String, ControlValue),
@@ -145,8 +148,12 @@ impl PowerAction {
 impl Hub {
     /// Build a module by id from either the built-in registry or a discovered
     /// plugin manifest. The hub treats both identically.
-    fn make(&self, module_id: &str) -> Option<Box<dyn Module>> {
-        if let Some(m) = builtin::make(module_id) {
+    fn make(
+        &self,
+        module_id: &str,
+        params: &std::collections::BTreeMap<String, String>,
+    ) -> Option<Box<dyn Module>> {
+        if let Some(m) = builtin::make(module_id, params) {
             return Some(m);
         }
         self.plugins
@@ -164,7 +171,7 @@ impl Hub {
 
     /// Instantiate a module by id and append it as a new tile.
     fn add_module(&mut self, module_id: &str) {
-        if let Some(m) = self.make(module_id) {
+        if let Some(m) = self.make(module_id, &Default::default()) {
             let id = self.config.next_id;
             self.config.next_id += 1;
             let size = m.descriptor().size;
@@ -186,7 +193,7 @@ impl Hub {
     /// Rebuild live instances from saved config (on startup).
     fn build_instances(&mut self) {
         for c in self.config.instances.clone() {
-            if let Some(m) = self.make(&c.module) {
+            if let Some(m) = self.make(&c.module, &c.params) {
                 // Clamp a saved size up to the module's minimum span.
                 let mut size = c.size;
                 while size.cols() < m.min_cols() {
@@ -213,6 +220,7 @@ impl Hub {
                 id: i.id,
                 module: i.module.descriptor().id.clone(),
                 size: i.size,
+                params: i.module.params(),
             })
             .collect();
         self.config.save();
@@ -508,7 +516,22 @@ impl Hub {
                 let body = widget::container(inst.module.view(inst.id, true, w))
                     .width(Length::Fixed(w))
                     .clip(true);
-                let tile = widget::Column::new().spacing(2).push(bar).push(body);
+                let mut tile = widget::Column::new().spacing(2).push(bar);
+                // Modules with a configurable option (e.g. a disk gauge's mount)
+                // get a picker dropdown above the tile body, in edit mode only.
+                let choices = inst.module.option_choices();
+                if !choices.is_empty() {
+                    let iid = inst.id;
+                    let picker = widget::dropdown(
+                        choices,
+                        Some(inst.module.option_selected()),
+                        move |i| Message::SetOption(iid, i),
+                    );
+                    tile = tile.push(
+                        widget::container(picker).width(Length::Fixed(w)).padding([0, 6]),
+                    );
+                }
+                tile = tile.push(body);
                 row = row.push(inst.id, tile);
             }
             row.into()
@@ -663,6 +686,13 @@ impl Hub {
                     }
                     inst.size = next;
                     inst.width.set(next.width()); // animate to the new width
+                    self.persist();
+                }
+            }
+            Message::SetOption(id, index) => {
+                if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    inst.module.set_option(index);
+                    self.bump_redraw();
                     self.persist();
                 }
             }

@@ -14,8 +14,18 @@ use cosmic::prelude::*;
 use cosmic::widget;
 use zbus::blocking::Connection;
 
+/// The two media tile looks. `Cosmic` follows the design system (a plain card);
+/// `Framed` is the custom blurred album-art backdrop. Picked at add time — each
+/// is its own palette entry / module id.
+#[derive(Clone, Copy, PartialEq)]
+enum Style {
+    Cosmic,
+    Framed,
+}
+
 pub struct MediaModule {
     desc: ModuleDescriptor,
+    style: Style,
     conn: Option<Connection>,
     state: MprisState,
     /// (art file path, sharp handle, blurred-backdrop handle) — cached so
@@ -89,7 +99,17 @@ fn apply_rounded_mask(img: &mut image::RgbaImage, radius: f32) {
 }
 
 impl MediaModule {
+    /// COSMIC-styled media tile (plain card) — the default.
     pub fn new() -> Self {
+        Self::with_style(Style::Cosmic, "builtin.media", "Media")
+    }
+
+    /// The custom blurred album-art backdrop look.
+    pub fn new_framed() -> Self {
+        Self::with_style(Style::Framed, "builtin.media_art", "Media (album art)")
+    }
+
+    fn with_style(style: Style, id: &str, name: &str) -> Self {
         // No D-Bus connect / art decode in the editor preview.
         let conn = if super::preview() {
             None
@@ -98,12 +118,13 @@ impl MediaModule {
         };
         let mut m = Self {
             desc: ModuleDescriptor {
-                id: "builtin.media".into(),
-                name: "Media".into(),
+                id: id.into(),
+                name: name.into(),
                 icon: "applications-multimedia-symbolic".into(),
                 size: TileSize::Large,
                 resizable: true,
             },
+            style,
             conn,
             state: MprisState::default(),
             art: None,
@@ -212,7 +233,10 @@ impl MediaModule {
         let inner = widget::container(content)
             .width(Length::Fill)
             .center_y(Length::Fill);
-        let stacked: Element<'a, Message> = match &self.art {
+        // The COSMIC style is a plain card; only the Framed style draws the
+        // blurred album-art backdrop.
+        let backdrop = (self.style == Style::Framed).then_some(()).and(self.art.as_ref());
+        let stacked: Element<'a, Message> = match backdrop {
             Some((_, _, blurred)) => {
                 let backdrop = widget::image(blurred.clone())
                     .width(Length::Fill)

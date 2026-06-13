@@ -4,6 +4,7 @@
 use crate::module::TileSize;
 use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::CosmicConfigEntry};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const APP_ID: &str = "com.pyxyll.CosmicControlCenter";
 
@@ -14,6 +15,10 @@ pub struct InstanceConfig {
     /// Module type id — a built-in id ("builtin.toggle") or a plugin id.
     pub module: String,
     pub size: TileSize,
+    /// Per-instance settings (e.g. {"mount": "/home"} for a disk gauge).
+    /// `default` keeps configs written before this field was added loadable.
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, CosmicConfigEntry)]

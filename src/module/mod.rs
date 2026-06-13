@@ -174,4 +174,24 @@ pub trait Module {
     fn refresh(&mut self) -> Task<Message> {
         Task::none()
     }
+
+    /// Per-instance settings to persist (e.g. {"mount": "/home"}). Empty means
+    /// the module is stateless and the same wherever it's placed.
+    fn params(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::new()
+    }
+
+    /// Editor picker: the selectable values for this tile's one configurable
+    /// option (e.g. the list of disk mounts). Empty means no picker is shown.
+    fn option_choices(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Index (into `option_choices`) of the currently-selected value.
+    fn option_selected(&self) -> usize {
+        0
+    }
+
+    /// Apply a picker choice (an index into `option_choices`).
+    fn set_option(&mut self, _index: usize) {}
 }
