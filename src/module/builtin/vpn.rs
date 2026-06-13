@@ -167,9 +167,22 @@ impl Module for VpnModule {
             }
             "select" => {
                 if let ControlValue::Text(name) = value {
-                    let action = if active_vpns().contains(&name) { "down" } else { "up" };
-                    let esc = name.replace('\'', "'\\''");
-                    super::run(&format!("nmcli connection {action} '{esc}'"));
+                    let esc = |s: &str| s.replace('\'', "'\\''");
+                    let active = active_vpns();
+                    if active.contains(&name) {
+                        // Tapping the active profile disconnects it.
+                        super::run(&format!("nmcli connection down '{}'", esc(&name)));
+                    } else {
+                        // One VPN at a time: bring down any other active VPN
+                        // first, then up the selected one — chained in a single
+                        // shell so they run in order (fire-and-forget can't).
+                        let mut cmd = String::new();
+                        for other in active.iter().filter(|o| *o != &name) {
+                            cmd.push_str(&format!("nmcli connection down '{}'; ", esc(other)));
+                        }
+                        cmd.push_str(&format!("nmcli connection up '{}'", esc(&name)));
+                        super::run(&cmd);
+                    }
                 }
             }
             _ => {}
