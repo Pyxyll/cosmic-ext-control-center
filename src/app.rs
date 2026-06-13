@@ -86,6 +86,9 @@ pub enum Message {
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
     PopupClosed(cosmic::iced::window::Id),
+    /// (applet) Activation-token subscription output, used to launch the editor
+    /// with a Wayland activation token so it can raise its window.
+    Token(cosmic::applet::token::subscription::TokenUpdate),
 }
 
 /// Session/power actions in the always-present footer.
@@ -632,7 +635,7 @@ impl Hub {
             }
             // Applet-only plumbing — handled by the Applet host, never reaches
             // the editor; arms here keep the match exhaustive.
-            Message::Surface(_) | Message::PopupClosed(_) => {}
+            Message::Surface(_) | Message::PopupClosed(_) | Message::Token(_) => {}
             Message::OpenPalette => {
                 self.palette_open = !self.palette_open;
                 self.bump_redraw();
@@ -733,8 +736,20 @@ impl Hub {
     }
 }
 
+/// Flags for the editor. Single-instance activation requires `CosmicFlags`; the
+/// editor takes no subcommands or args, so the trait defaults apply.
+#[derive(Debug, Clone, Default)]
+pub struct Flags;
+
+impl cosmic::app::CosmicFlags for Flags {
+    type SubCommand = String;
+    type Args = Vec<String>;
+}
+
 /// The standalone window app — the configuration **editor**. A thin
-/// `cosmic::Application` shell around a `Hub` with editing enabled.
+/// `cosmic::Application` shell around a `Hub` with editing enabled. Runs
+/// single-instance (see `main.rs`) so a second launch focuses the existing
+/// window instead of opening a duplicate.
 pub struct App {
     core: Core,
     hub: Hub,
@@ -742,7 +757,7 @@ pub struct App {
 
 impl cosmic::Application for App {
     type Executor = cosmic::executor::Default;
-    type Flags = ();
+    type Flags = Flags;
     type Message = Message;
     const APP_ID: &'static str = crate::config::APP_ID;
 
@@ -754,7 +769,7 @@ impl cosmic::Application for App {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: ()) -> (Self, Task<Message>) {
+    fn init(core: Core, _flags: Flags) -> (Self, Task<Message>) {
         // The editor is a data-free layout surface — no live fetches/polling.
         builtin::set_preview(true);
         (App { core, hub: Hub::new(true) }, Task::none())
@@ -770,6 +785,16 @@ impl cosmic::Application for App {
 
     fn subscription(&self) -> Subscription<Message> {
         self.hub.subscription()
+    }
+
+    /// A second launch activated this instance; raise our window. On Wayland this
+    /// only takes effect when the new launch passed an activation token (the app
+    /// launcher does; a bare `Command::spawn`, e.g. the applet gear, does not).
+    fn dbus_activation(&mut self, _msg: cosmic::dbus_activation::Message) -> Task<Message> {
+        self.core
+            .main_window_id()
+            .map(cosmic::iced::window::gain_focus)
+            .unwrap_or_else(Task::none)
     }
 }
 

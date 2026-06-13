@@ -38,6 +38,10 @@ features = [
     "applet",
     "applet-token",
     "multi-window",
+    # The editor runs single-instance so a second launch (e.g. the applet gear)
+    # focuses the existing window instead of opening a duplicate that would
+    # clobber the shared config.
+    "single-instance",
 ]
 
 [dependencies.cosmic-config]
