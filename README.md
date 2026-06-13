@@ -11,6 +11,14 @@ commands, without writing Rust or recompiling.
 Status: early preview (0.1.1). It works and is usable day to day, but it still
 has rough edges. See [Known issues](#known-issues).
 
+<p align="center">
+  <img src="docs/applet.png" alt="The panel applet popup showing live tiles" width="360">
+  <img src="docs/editor.png" alt="The editor window with the module palette" width="480">
+</p>
+
+On the left, the applet popup with live, interactive tiles. On the right, the
+editor window where you add, remove, reorder, and resize tiles from the palette.
+
 ## Two pieces
 
 | Binary | What it is |
