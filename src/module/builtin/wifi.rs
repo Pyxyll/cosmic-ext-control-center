@@ -1,8 +1,8 @@
 //! Wi-Fi quick toggle via NetworkManager (`nmcli radio wifi`). Rendered as a
-//! split pill: tap to toggle, chevron opens COSMIC network settings.
+//! split pill: tap to toggle, chevron expands an inline network picker.
 
 use crate::app::Message;
-use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, TileSize};
+use crate::module::{ControlValue, InstanceId, ListEntry, Module, ModuleDescriptor, TileSize};
 use cosmic::app::Task;
 use cosmic::prelude::*;
 
@@ -13,6 +13,76 @@ pub struct WifiModule {
     ssid: Option<String>,
     /// Negotiated link rate in Mb/s for the active connection, if any.
     rate: Option<u32>,
+    /// Networks for the inline selection list, populated on expand.
+    nets: Vec<Net>,
+    /// SSID awaiting a password (a new secured network), and the typed value.
+    pending: Option<String>,
+    password: String,
+}
+
+/// One scanned network.
+struct Net {
+    ssid: String,
+    signal: u32,
+    active: bool,
+    /// Has security (needs a password unless already saved).
+    secured: bool,
+    /// A saved NM connection exists, so it connects without a prompt.
+    known: bool,
+}
+
+/// Available networks via `nmcli`, strongest-signal-per-SSID, active first.
+fn scan_networks() -> Vec<Net> {
+    let Some(o) = super::out("nmcli -t -f ACTIVE,SIGNAL,SECURITY,SSID dev wifi") else {
+        return Vec::new();
+    };
+    // Saved connection names, to mark which networks connect without a prompt.
+    let saved: Vec<String> = super::out("nmcli -t -f NAME connection show")
+        .map(|o| o.lines().map(|l| l.to_string()).collect())
+        .unwrap_or_default();
+
+    let mut best: Vec<Net> = Vec::new();
+    for l in o.lines() {
+        // SSID is the last field and may contain ':', so split into at most 4.
+        let mut it = l.splitn(4, ':');
+        let active = it.next() == Some("yes");
+        let signal: u32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let security = it.next().unwrap_or("");
+        let ssid = it.next().unwrap_or("").trim().to_string();
+        if ssid.is_empty() {
+            continue;
+        }
+        let secured = !(security.is_empty() || security == "--");
+        match best.iter_mut().find(|n| n.ssid == ssid) {
+            Some(n) => {
+                n.active |= active;
+                n.signal = n.signal.max(signal);
+            }
+            None => best.push(Net {
+                known: saved.iter().any(|s| s == &ssid),
+                ssid,
+                signal,
+                active,
+                secured,
+            }),
+        }
+    }
+    best.sort_by(|a, b| b.active.cmp(&a.active).then(b.signal.cmp(&a.signal)));
+    best
+}
+
+/// Connect to an SSID, with a password for a new secured network.
+fn connect(ssid: &str, password: Option<&str>) {
+    let esc = |s: &str| s.replace('\'', "'\\''");
+    let cmd = match password {
+        Some(pw) => format!(
+            "nmcli dev wifi connect '{}' password '{}'",
+            esc(ssid),
+            esc(pw)
+        ),
+        None => format!("nmcli dev wifi connect '{}'", esc(ssid)),
+    };
+    super::run(&cmd);
 }
 
 /// Parse nmcli's rate field ("540 Mbit/s") into Mb/s, dropping a zero rate.
@@ -47,6 +117,9 @@ impl WifiModule {
             available: false,
             ssid: None,
             rate: None,
+            nets: Vec::new(),
+            pending: None,
+            password: String::new(),
         };
         m.read();
         m
@@ -95,7 +168,7 @@ impl Module for WifiModule {
         } else {
             "Not connected".to_string()
         };
-        super::toggle_tile(id, width, self.on, edit, self.desc.icon.as_str(), &label, &status, true)
+        super::toggle_tile(id, width, self.on, edit, self.desc.icon.as_str(), &label, &status, super::Chevron::Expand)
     }
 
     fn on_control(&mut self, control: &str, value: ControlValue) -> Task<Message> {
@@ -109,9 +182,70 @@ impl Module for WifiModule {
                 }
             }
             "settings" => super::run("cosmic-settings network"),
+            // Inline picker: scan on expand, connect on select.
+            "expand" => self.nets = scan_networks(),
+            "select" => {
+                if let ControlValue::Text(ssid) = value {
+                    let net = self.nets.iter().find(|n| n.ssid == ssid);
+                    let needs_pw = net.is_some_and(|n| n.secured && !n.known && !n.active);
+                    if needs_pw {
+                        // New secured network: ask for a password instead of
+                        // attempting a doomed connect.
+                        self.pending = Some(ssid);
+                        self.password.clear();
+                    } else {
+                        connect(&ssid, None);
+                        self.ssid = Some(ssid); // optimistic; corrected on next poll
+                        self.on = true;
+                    }
+                }
+            }
+            "input" => {
+                if let ControlValue::Text(v) = value {
+                    self.password = v;
+                }
+            }
+            "submit" => {
+                if let Some(ssid) = self.pending.take() {
+                    connect(&ssid, Some(&self.password));
+                    self.password.clear();
+                    self.ssid = Some(ssid); // optimistic
+                    self.on = true;
+                }
+            }
+            "cancel" => {
+                self.pending = None;
+                self.password.clear();
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    fn expandable(&self) -> bool {
+        true
+    }
+
+    fn entries(&self) -> Vec<ListEntry> {
+        self.nets
+            .iter()
+            .map(|n| ListEntry {
+                key: n.ssid.clone(),
+                label: n.ssid.clone(),
+                detail: if n.secured {
+                    format!("{}% · secured", n.signal)
+                } else {
+                    format!("{}%", n.signal)
+                },
+                active: n.active,
+            })
+            .collect()
+    }
+
+    fn pending_input(&self) -> Option<(String, String)> {
+        self.pending
+            .as_ref()
+            .map(|ssid| (ssid.clone(), self.password.clone()))
     }
 
     fn refresh(&mut self) -> Task<Message> {

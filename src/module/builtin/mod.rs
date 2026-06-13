@@ -96,10 +96,21 @@ pub(crate) fn tile<'a>(
         .into()
 }
 
+/// What the split pill's right-hand chevron does.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Chevron {
+    /// No chevron (toggle only).
+    None,
+    /// Opens the module's external settings (sends the "settings" control).
+    Settings,
+    /// Expands an inline selection list (Wi-Fi networks, devices, profiles).
+    Expand,
+}
+
 /// GNOME-style quick-toggle pill: the whole left area toggles the module; an
-/// optional smaller right segment opens its settings. The tile is tinted with
-/// the accent when on. Controls go inert in edit mode (so the reorder drag
-/// isn't swallowed). Modules handle the "on" / "settings" controls.
+/// optional smaller right segment opens its settings or an inline list. The tile
+/// is tinted with the accent when on. Controls go inert in edit mode (so the
+/// reorder drag isn't swallowed). Modules handle the "on" / "settings" controls.
 pub(crate) fn toggle_tile<'a>(
     id: InstanceId,
     width: f32,
@@ -108,7 +119,7 @@ pub(crate) fn toggle_tile<'a>(
     icon: &str,
     label: &str,
     status: &str,
-    has_settings: bool,
+    chevron: Chevron,
 ) -> Element<'a, Message> {
     let accent = theme::ACCENTS[0].1;
     // A definite tile height. The full-height divider uses `Length::Fill`, and
@@ -162,20 +173,31 @@ pub(crate) fn toggle_tile<'a>(
         .height(Length::Fill)
         .align_y(Alignment::Center)
         .push(left);
-    if has_settings {
+    if chevron != Chevron::None {
         // A full-height divider in the window background colour separates the
-        // toggle area from the settings chevron — reads as a gap between the two
-        // halves of the split pill.
+        // toggle area from the chevron — reads as a gap between the two halves of
+        // the split pill.
         row = row.push(
             widget::container(widget::Space::new())
                 .width(Length::Fixed(2.0))
                 .height(Length::Fill)
                 .class(theme::divider_gap()),
         );
+        // Expand uses a down chevron (reveals the list); Settings keeps the
+        // forward chevron (leaves to an external page).
+        let glyph = if chevron == Chevron::Expand {
+            "pan-down-symbolic"
+        } else {
+            "go-next-symbolic"
+        };
         let mut chev =
-            widget::button::icon(widget::icon::from_name("go-next-symbolic").size(16)).padding(14);
+            widget::button::icon(widget::icon::from_name(glyph).size(16)).padding(14);
         if !edit {
-            chev = chev.on_press(Message::Control(id, "settings".into(), ControlValue::Trigger));
+            let msg = match chevron {
+                Chevron::Expand => Message::Expand(id),
+                _ => Message::Control(id, "settings".into(), ControlValue::Trigger),
+            };
+            chev = chev.on_press(msg);
         }
         row = row.push(chev);
     }

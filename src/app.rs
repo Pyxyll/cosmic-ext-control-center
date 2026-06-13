@@ -5,8 +5,8 @@
 use crate::config::{Config, InstanceConfig};
 use crate::module::manifest::{Manifest, ManifestModule};
 use crate::module::{
-    ControlValue, GRID_GAP, GRID_UNIT, InstanceId, Module, ModuleDescriptor, TileSize, ValueAnim,
-    builtin,
+    ControlValue, GRID_GAP, GRID_UNIT, InstanceId, ListEntry, Module, ModuleDescriptor, TileSize,
+    ValueAnim, builtin,
 };
 use crate::plugins;
 use crate::theme;
@@ -46,6 +46,15 @@ pub struct Hub {
     palette_open: bool,
     /// A destructive power action awaiting confirmation.
     pending_power: Option<PowerAction>,
+    /// The tile whose inline selection list is currently expanded (Wi-Fi /
+    /// Bluetooth / VPN). Transient view state, reset when the popup reopens.
+    /// Stays set while the drawer animates closed, then cleared in `Frame`.
+    expanded: Option<InstanceId>,
+    /// Whether the drawer is opening (true) or closing (false) — drives whether
+    /// `expand_anim` targets the open height or 0.
+    expand_open: bool,
+    /// Animated drawer height in px (eases the inline list in and out).
+    expand_anim: ValueAnim,
     /// Latest battery reading (percent, charging?), refreshed on poll. `None`
     /// on desktops with no battery — the readout is simply hidden.
     battery: Option<(u8, bool)>,
@@ -68,6 +77,9 @@ pub enum Message {
     /// Pick a tile's configurable option in the editor (e.g. a disk gauge's
     /// mount): (instance, index into the module's `option_choices`).
     SetOption(InstanceId, usize),
+    /// Toggle a tile's inline selection list (Wi-Fi networks, devices, VPN
+    /// profiles). Expanding triggers a one-off scan of that module.
+    Expand(InstanceId),
     Reordered(Vec<InstanceId>),
     /// A module control changed: (instance, control id, new value).
     Control(InstanceId, String, ControlValue),
@@ -402,6 +414,114 @@ fn palette_item<'a>(icon: &str, name: &str, msg: Message) -> Element<'a, Message
         .into()
 }
 
+/// A row in a tile's inline selection list: label + detail, a check on the
+/// active entry; the whole row is a button that selects it.
+fn entry_row<'a>(id: InstanceId, e: &ListEntry) -> Element<'a, Message> {
+    let mut info = widget::Column::new()
+        .spacing(1)
+        .width(Length::Fill)
+        .push(widget::text::body(e.label.clone()));
+    if !e.detail.is_empty() {
+        info = info.push(
+            widget::text::caption(e.detail.clone())
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+        );
+    }
+    let mut row = widget::Row::new()
+        .spacing(10)
+        .align_y(Alignment::Center)
+        .width(Length::Fill)
+        .push(info);
+    if e.active {
+        row = row.push(widget::icon::from_name("object-select-symbolic").size(18));
+    }
+    let active = e.active;
+    let style = move |bg: f32| {
+        move |_focused: bool, t: &cosmic::Theme| {
+            let fg: cosmic::iced::Color = t.cosmic().background.on.into();
+            let mut s = cosmic::widget::button::Style::new();
+            // The connected entry sits on a steady accent tint; the rest react to
+            // hover.
+            let base = if active {
+                theme::alpha(theme::ACCENTS[0].1, 0.18)
+            } else {
+                theme::alpha(fg, bg)
+            };
+            s.background = Some(cosmic::iced::Background::Color(base));
+            s.border_radius = 10.0.into();
+            s.icon_color = Some(fg);
+            s.text_color = Some(fg);
+            s
+        }
+    };
+    widget::button::custom(widget::container(row).padding([8, 12]))
+        .width(Length::Fill)
+        .class(cosmic::theme::Button::Custom {
+            active: Box::new(style(0.05)),
+            disabled: Box::new(move |t| style(0.03)(false, t)),
+            hovered: Box::new(style(0.14)),
+            pressed: Box::new(style(0.20)),
+        })
+        .on_press(Message::Control(
+            id,
+            "select".into(),
+            ControlValue::Text(e.key.clone()),
+        ))
+        .into()
+}
+
+/// A selected secured network expanded in place: one tinted card holding the
+/// network name and, below it, the password field with Connect / Cancel. (The
+/// row can't be a button here, since the field lives inside it.)
+fn expanded_entry<'a>(e: &ListEntry, value: String, id: InstanceId) -> Element<'a, Message> {
+    let info = widget::Column::new()
+        .spacing(1)
+        .push(widget::text::body(e.label.clone()))
+        .push(
+            widget::text::caption(e.detail.clone())
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+        );
+    let field = widget::secure_input("Password", value, None, true)
+        .on_input(move |v| Message::Control(id, "input".into(), ControlValue::Text(v)))
+        .on_submit(move |_| Message::Control(id, "submit".into(), ControlValue::Trigger));
+    let buttons = widget::Row::new()
+        .spacing(8)
+        .push(
+            widget::button::standard("Cancel")
+                .on_press(Message::Control(id, "cancel".into(), ControlValue::Trigger)),
+        )
+        .push(widget::space::horizontal())
+        .push(
+            widget::button::suggested("Connect")
+                .on_press(Message::Control(id, "submit".into(), ControlValue::Trigger)),
+        );
+    let content = widget::Column::new()
+        .spacing(8)
+        .push(info)
+        .push(field)
+        .push(buttons);
+    widget::container(content)
+        .padding([8, 12])
+        .width(Length::Fill)
+        .class(theme::card(true, theme::ACCENTS[0].1))
+        .into()
+}
+
+/// Estimated natural height (px) of a module's selection drawer — the target the
+/// open animation eases to. Matches `selection_panel`'s chrome, (capped) list
+/// area, and any pending input block.
+fn drawer_target(module: &dyn Module) -> f32 {
+    let entries = module.entries().len();
+    let chrome = 24.0 + 30.0 + 10.0; // card padding + header + spacing
+    let mut content = if entries == 0 { 36.0 } else { entries as f32 * 52.0 };
+    // An expanded row's password field (secure input + button row) adds to the
+    // list content, which is then capped/scrolled.
+    if module.pending_input().is_some() {
+        content += 100.0;
+    }
+    chrome + content.min(260.0)
+}
+
 /// A full-width row in the editor sidebar: icon + module name, tap to add.
 fn sidebar_item<'a>(icon: &str, name: &str, msg: Message) -> Element<'a, Message> {
     let content = widget::Row::new()
@@ -447,6 +567,9 @@ impl Hub {
             allow_edit,
             palette_open: false,
             pending_power: None,
+            expanded: None,
+            expand_open: false,
+            expand_anim: ValueAnim::new(0.0),
             battery: read_battery(),
             redraw_until: None,
         };
@@ -475,6 +598,10 @@ impl Hub {
     /// when the layout actually changed; otherwise keep the live instances (and
     /// their open connections), making the popup open instantly.
     pub fn reload(&mut self) {
+        // Each popup open starts collapsed.
+        self.expanded = None;
+        self.expand_open = false;
+        self.expand_anim = ValueAnim::new(0.0);
         let fresh = Config::load();
         if fresh.instances == self.config.instances {
             return;
@@ -536,30 +663,113 @@ impl Hub {
             }
             row.into()
         } else {
-            let children: Vec<Element<'_, Message>> = self
-                .instances
-                .iter()
-                .map(|inst| {
-                    let w = inst.width.current();
+            // Fixed 4-column block: pack tiles into rows ourselves (greedy, by
+            // column span) so an expanded selection list can be injected inline,
+            // right under the row its tile sits in (GNOME-style), rather than
+            // replacing the whole grid.
+            let mut rows: Vec<(Vec<Element<'_, Message>>, bool)> = Vec::new();
+            let mut cur: Vec<Element<'_, Message>> = Vec::new();
+            let mut used = 0u32;
+            let mut has_expanded = false;
+            for inst in &self.instances {
+                let cols = inst.size.cols();
+                if used + cols > 4 && !cur.is_empty() {
+                    rows.push((std::mem::take(&mut cur), has_expanded));
+                    used = 0;
+                    has_expanded = false;
+                }
+                let w = inst.width.current();
+                cur.push(
                     widget::container(inst.module.view(inst.id, false, w))
                         .width(Length::Fixed(w))
                         .clip(true)
-                        .into()
-                })
-                .collect();
-            widget::flex_row(children)
-                .column_spacing(GRID_GAP)
-                .row_spacing(GRID_GAP)
-                .width(Length::Fill)
-                .into()
+                        .into(),
+                );
+                used += cols;
+                has_expanded |= self.expanded == Some(inst.id);
+            }
+            if !cur.is_empty() {
+                rows.push((cur, has_expanded));
+            }
+
+            let mut col = widget::Column::new().spacing(GRID_GAP).width(Length::Fill);
+            for (tiles, exp) in rows {
+                col = col.push(widget::row(tiles).spacing(GRID_GAP));
+                if exp {
+                    if let Some(inst) =
+                        self.expanded.and_then(|id| self.instances.iter().find(|i| i.id == id))
+                    {
+                        // Clip the drawer to its animated height so it slides in
+                        // and out (and neighbours below reflow with it).
+                        col = col.push(
+                            widget::container(self.selection_panel(inst))
+                                .max_height(self.expand_anim.current().max(0.0))
+                                .clip(true),
+                        );
+                    }
+                }
+            }
+            col.into()
         }
+    }
+
+    /// The inline selection list for an expandable tile (Wi-Fi, Bluetooth, VPN):
+    /// a header plus the module's current entries, each connectable. Rendered
+    /// directly under the tile's row (GNOME-style vertical expansion), so it's a
+    /// block-wide drawer rather than a separate page.
+    fn selection_panel<'a>(&'a self, inst: &'a Instance) -> Element<'a, Message> {
+        let id = inst.id;
+        let desc = inst.module.descriptor();
+        let header = widget::Row::new()
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .push(widget::icon::from_name(desc.icon.as_str()).size(18))
+            .push(widget::text::body(desc.name.clone()))
+            .push(widget::space::horizontal())
+            .push(round_btn("window-close-symbolic", Message::Expand(id)));
+
+        let entries = inst.module.entries();
+        // The entry (if any) awaiting text input expands to show the field.
+        let pending = inst.module.pending_input();
+        let mut list = widget::Column::new().spacing(4).width(Length::Fill);
+        if entries.is_empty() {
+            list = list.push(
+                widget::container(
+                    widget::text::caption("Nothing available")
+                        .class(cosmic::style::Text::Custom(theme::dim_text)),
+                )
+                .padding(8),
+            );
+        } else {
+            for e in &entries {
+                // The pending entry renders as one expanded card containing its
+                // name plus the password field; the rest stay tappable rows.
+                match &pending {
+                    Some((key, value)) if key == &e.key => {
+                        list = list.push(expanded_entry(e, value.clone(), id));
+                    }
+                    _ => list = list.push(entry_row(id, e)),
+                }
+            }
+        }
+
+        // Cap the list height so a long scan (many Wi-Fi networks) scrolls
+        // instead of ballooning the popup.
+        let card = widget::Column::new()
+            .spacing(10)
+            .push(header)
+            .push(widget::container(widget::scrollable(list)).max_height(260.0));
+        widget::container(card)
+            .padding(12)
+            .width(Length::Fill)
+            .class(theme::card(false, theme::ACCENTS[0].1))
+            .into()
     }
 
     /// Compact layout used by the **applet** popup: power actions, the tile grid,
     /// and the bottom bar, in a centered fixed-width column.
     pub fn view(&self) -> Element<'_, Message> {
         let header = self.power_bar();
-        let grid = self.grid();
 
         let mut col = widget::Column::new()
             .spacing(16)
@@ -577,7 +787,9 @@ impl Hub {
             );
             col = col.push(Self::grid_ruler());
         }
-        col = col.push(grid);
+        // The grid injects the expanded selection list inline (under the row of
+        // the tile whose chevron is open), so it doesn't appear here.
+        col = col.push(self.grid());
         col = col.push(self.bottom_bar());
 
         // Center the fixed-width 4-column block in the window.
@@ -696,11 +908,40 @@ impl Hub {
                     self.persist();
                 }
             }
+            Message::Expand(id) => {
+                // Toggle: tapping the open tile's chevron animates it closed;
+                // otherwise populate + animate open (the `Frame` reap clears
+                // `expanded` once a close finishes).
+                if self.expanded == Some(id) && self.expand_open {
+                    self.expand_open = false;
+                    self.expand_anim.set(0.0);
+                } else if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+                    // Populate the list on demand (the scan runs here, not in view).
+                    let _ = inst.module.on_control("expand", ControlValue::Trigger);
+                    let height = drawer_target(inst.module.as_ref());
+                    self.expanded = Some(id);
+                    self.expand_open = true;
+                    self.expand_anim.set(height);
+                }
+                self.bump_redraw();
+            }
             Message::Reordered(order) => self.reorder(order),
             Message::Poll => {
                 // Re-read polled state for every module (built-ins no-op).
                 for inst in &mut self.instances {
                     let _ = inst.module.refresh();
+                }
+                // Keep an open selection list fresh (re-scan its targets) and
+                // track its height as the entry count changes.
+                if self.expand_open {
+                    if let Some(inst) = self
+                        .expanded
+                        .and_then(|eid| self.instances.iter_mut().find(|i| i.id == eid))
+                    {
+                        let _ = inst.module.on_control("expand", ControlValue::Trigger);
+                        let height = drawer_target(inst.module.as_ref());
+                        self.expand_anim.set(height);
+                    }
                 }
                 self.battery = read_battery();
             }
@@ -710,6 +951,10 @@ impl Hub {
             Message::Frame => {
                 self.instances
                     .retain(|i| !(i.removing && !i.width.animating()));
+                // Once a close animation settles, drop the drawer entirely.
+                if !self.expand_open && self.expanded.is_some() && !self.expand_anim.animating() {
+                    self.expanded = None;
+                }
             }
             Message::Power(a) => {
                 if a.needs_confirm() {
@@ -726,7 +971,15 @@ impl Hub {
             Message::PowerCancel => self.pending_power = None,
             Message::Control(id, control, value) => {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
-                    return inst.module.on_control(&control, value);
+                    let task = inst.module.on_control(&control, value);
+                    // If this changed the open drawer (e.g. a Wi-Fi password
+                    // prompt appeared/closed), re-measure so it animates to fit.
+                    if self.expand_open && self.expanded == Some(id) {
+                        let height = drawer_target(inst.module.as_ref());
+                        self.expand_anim.set(height);
+                        self.bump_redraw();
+                    }
+                    return task;
                 }
             }
             Message::StateLoaded(id, control, value) => {
@@ -751,7 +1004,9 @@ impl Hub {
         let bursting = self
             .redraw_until
             .is_some_and(|t| std::time::Instant::now() < t);
-        if bursting || self.instances.iter().any(|i| i.module.animating() || i.width.animating()) {
+        let animating = self.expand_anim.animating()
+            || self.instances.iter().any(|i| i.module.animating() || i.width.animating());
+        if bursting || animating {
             subs.push(time::every(Duration::from_millis(16)).map(|_| Message::Frame));
         }
         Subscription::batch(subs)

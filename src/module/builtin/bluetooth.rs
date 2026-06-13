@@ -1,8 +1,8 @@
 //! Bluetooth quick toggle via `bluetoothctl` (power on/off). Split pill: tap to
-//! toggle, chevron opens COSMIC bluetooth settings.
+//! toggle, chevron expands an inline device picker.
 
 use crate::app::Message;
-use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, TileSize};
+use crate::module::{ControlValue, InstanceId, ListEntry, Module, ModuleDescriptor, TileSize};
 use cosmic::app::Task;
 use cosmic::prelude::*;
 
@@ -15,6 +15,48 @@ pub struct BluetoothModule {
     name: Option<String>,
     /// Lowest battery percentage across connected devices that report one.
     battery: Option<u8>,
+    /// Paired devices for the inline selection list, populated on expand.
+    entries: Vec<ListEntry>,
+}
+
+/// Parse a `bluetoothctl devices ...` listing into (mac, name) pairs.
+fn devices(cmd: &str) -> Vec<(String, String)> {
+    super::out(cmd)
+        .map(|o| {
+            o.lines()
+                .filter_map(|l| {
+                    let rest = l.strip_prefix("Device ")?;
+                    let mut it = rest.splitn(2, ' ');
+                    let mac = it.next()?.to_string();
+                    Some((mac, it.next().unwrap_or("").trim().to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn connected_macs() -> Vec<String> {
+    devices("bluetoothctl devices Connected")
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect()
+}
+
+/// Paired devices, marking which are currently connected.
+fn scan_devices() -> Vec<ListEntry> {
+    let connected = connected_macs();
+    devices("bluetoothctl devices Paired")
+        .into_iter()
+        .map(|(mac, name)| {
+            let active = connected.contains(&mac);
+            ListEntry {
+                label: if name.is_empty() { mac.clone() } else { name },
+                detail: if active { "Connected".into() } else { String::new() },
+                active,
+                key: mac,
+            }
+        })
+        .collect()
 }
 
 impl BluetoothModule {
@@ -32,6 +74,7 @@ impl BluetoothModule {
             connected: 0,
             name: None,
             battery: None,
+            entries: Vec::new(),
         };
         m.read();
         m
@@ -109,7 +152,7 @@ impl Module for BluetoothModule {
             self.desc.icon.as_str(),
             "Bluetooth",
             &status,
-            true,
+            super::Chevron::Expand,
         )
     }
 
@@ -127,9 +170,29 @@ impl Module for BluetoothModule {
                 }
             }
             "settings" => super::run("cosmic-settings bluetooth"),
+            // Inline picker: list paired devices on expand, toggle connect on select.
+            "expand" => self.entries = scan_devices(),
+            "select" => {
+                if let ControlValue::Text(mac) = value {
+                    let action = if connected_macs().contains(&mac) {
+                        "disconnect"
+                    } else {
+                        "connect"
+                    };
+                    super::run(&format!("bluetoothctl {action} {mac}"));
+                }
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    fn expandable(&self) -> bool {
+        true
+    }
+
+    fn entries(&self) -> Vec<ListEntry> {
+        self.entries.clone()
     }
 
     fn refresh(&mut self) -> Task<Message> {

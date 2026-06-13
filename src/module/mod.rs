@@ -123,6 +123,17 @@ pub enum ControlValue {
     Text(String),
 }
 
+/// One selectable target in a module's expandable list (a Wi-Fi network, a
+/// Bluetooth device, a VPN profile). `key` is passed back to `on_control` as the
+/// "select" value; `active` marks the currently-connected one.
+#[derive(Debug, Clone)]
+pub struct ListEntry {
+    pub key: String,
+    pub label: String,
+    pub detail: String,
+    pub active: bool,
+}
+
 /// Identity + presentation of a module type.
 #[derive(Debug, Clone)]
 pub struct ModuleDescriptor {
@@ -194,4 +205,26 @@ pub trait Module {
 
     /// Apply a picker choice (an index into `option_choices`).
     fn set_option(&mut self, _index: usize) {}
+
+    /// Whether this module's tile chevron opens an inline selection list (Wi-Fi
+    /// networks, Bluetooth devices, VPN profiles) rather than external settings.
+    fn expandable(&self) -> bool {
+        false
+    }
+
+    /// The current selectable targets for the expanded list. Populated when the
+    /// hub sends the `expand` control (so the scan only runs on demand); a
+    /// `select` control with an entry's `key` acts on it.
+    fn entries(&self) -> Vec<ListEntry> {
+        Vec::new()
+    }
+
+    /// While the module awaits text input (e.g. a Wi-Fi password for a new
+    /// secured network), the (entry key, current value) — the key identifies
+    /// which list entry to expand the field under. When `Some`, that row shows a
+    /// secure field; edits arrive as the "input" control, confirm as "submit",
+    /// dismiss as "cancel".
+    fn pending_input(&self) -> Option<(String, String)> {
+        None
+    }
 }

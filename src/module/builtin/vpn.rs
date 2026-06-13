@@ -1,9 +1,9 @@
 //! VPN quick toggle via NetworkManager. Rendered as a split pill (same style as
-//! Wi-Fi): tap to bring the VPN connection up/down, chevron opens COSMIC network
-//! settings. Works with any NM-managed VPN (OpenVPN, WireGuard, etc.).
+//! Wi-Fi): tap to bring the VPN connection up/down, chevron expands an inline
+//! profile picker. Works with any NM-managed VPN (OpenVPN, WireGuard, etc.).
 
 use crate::app::Message;
-use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, TileSize};
+use crate::module::{ControlValue, InstanceId, ListEntry, Module, ModuleDescriptor, TileSize};
 use cosmic::app::Task;
 use cosmic::prelude::*;
 
@@ -14,6 +14,8 @@ pub struct VpnModule {
     /// Connection to act on: the active VPN when on, else the first configured
     /// one. `None` when no NM VPN exists.
     name: Option<String>,
+    /// Profiles for the inline selection list, populated on expand.
+    entries: Vec<ListEntry>,
 }
 
 /// Truncate a long label to fit a tile, with an ellipsis.
@@ -25,18 +27,48 @@ fn ellipsize(s: &str, max: usize) -> String {
     }
 }
 
-/// First VPN/WireGuard connection name in an `nmcli -t -f NAME,TYPE` listing.
-/// The type is the last `:`-field, so split from the right; unescape nmcli's
-/// `\:` / `\\` so the real name is usable in a follow-up `nmcli` call.
+/// All VPN/WireGuard connection names in an `nmcli -t -f NAME,TYPE` listing. The
+/// type is the last `:`-field, so split from the right; unescape nmcli's `\:` /
+/// `\\` so the real name is usable in a follow-up `nmcli` call.
+fn vpn_names(listing: &str) -> Vec<String> {
+    listing
+        .lines()
+        .filter_map(|l| {
+            let (name, typ) = l.rsplit_once(':')?;
+            (matches!(typ, "vpn" | "wireguard") && !name.is_empty())
+                .then(|| name.replace("\\:", ":").replace("\\\\", "\\"))
+        })
+        .collect()
+}
+
 fn first_vpn(listing: &str) -> Option<String> {
-    listing.lines().find_map(|l| {
-        let (name, typ) = l.rsplit_once(':')?;
-        if matches!(typ, "vpn" | "wireguard") && !name.is_empty() {
-            Some(name.replace("\\:", ":").replace("\\\\", "\\"))
-        } else {
-            None
-        }
-    })
+    vpn_names(listing).into_iter().next()
+}
+
+/// Names of the currently-active VPN connections.
+fn active_vpns() -> Vec<String> {
+    super::out("nmcli -t -f NAME,TYPE connection show --active")
+        .map(|o| vpn_names(&o))
+        .unwrap_or_default()
+}
+
+/// All configured VPN profiles, marking which are active.
+fn scan_profiles() -> Vec<ListEntry> {
+    let all = super::out("nmcli -t -f NAME,TYPE connection show")
+        .map(|o| vpn_names(&o))
+        .unwrap_or_default();
+    let active = active_vpns();
+    all.into_iter()
+        .map(|name| {
+            let is_active = active.contains(&name);
+            ListEntry {
+                key: name.clone(),
+                label: name,
+                detail: if is_active { "Connected".into() } else { String::new() },
+                active: is_active,
+            }
+        })
+        .collect()
 }
 
 impl VpnModule {
@@ -51,6 +83,7 @@ impl VpnModule {
             },
             on: false,
             name: None,
+            entries: Vec::new(),
         };
         m.read();
         m
@@ -86,7 +119,7 @@ impl Module for VpnModule {
         } else {
             "Off".to_string()
         };
-        super::toggle_tile(id, width, self.on, edit, self.desc.icon.as_str(), &label, &status, true)
+        super::toggle_tile(id, width, self.on, edit, self.desc.icon.as_str(), &label, &status, super::Chevron::Expand)
     }
 
     fn on_control(&mut self, control: &str, value: ControlValue) -> Task<Message> {
@@ -101,9 +134,26 @@ impl Module for VpnModule {
                 }
             }
             "settings" => super::run("cosmic-settings network"),
+            // Inline picker: list profiles on expand, toggle the chosen one on select.
+            "expand" => self.entries = scan_profiles(),
+            "select" => {
+                if let ControlValue::Text(name) = value {
+                    let action = if active_vpns().contains(&name) { "down" } else { "up" };
+                    let esc = name.replace('\'', "'\\''");
+                    super::run(&format!("nmcli connection {action} '{esc}'"));
+                }
+            }
             _ => {}
         }
         Task::none()
+    }
+
+    fn expandable(&self) -> bool {
+        true
+    }
+
+    fn entries(&self) -> Vec<ListEntry> {
+        self.entries.clone()
     }
 
     fn refresh(&mut self) -> Task<Message> {

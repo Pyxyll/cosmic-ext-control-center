@@ -66,7 +66,7 @@ impl Module for AirplaneModule {
             self.desc.icon.as_str(),
             "Airplane Mode",
             status,
-            false,
+            super::Chevron::None,
         )
     }
 

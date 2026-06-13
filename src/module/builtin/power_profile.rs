@@ -129,7 +129,7 @@ impl Module for PowerProfileModule {
         };
         // Accent the tile when boosted (performance), like Wi-Fi lights up when on.
         let on = self.current == "performance";
-        super::toggle_tile(id, width, on, edit, icon, &label, &status, true)
+        super::toggle_tile(id, width, on, edit, icon, &label, &status, super::Chevron::Settings)
     }
 
     fn on_control(&mut self, control: &str, _value: ControlValue) -> Task<Message> {
