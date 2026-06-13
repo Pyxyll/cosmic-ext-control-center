@@ -251,7 +251,7 @@ impl MediaModule {
             .width(Length::Fixed(width))
             .height(Length::Fixed(height))
             .clip(true)
-            .class(theme::card(self.state.playing, theme::ACCENTS[0].1))
+            .class(theme::card(self.state.playing, theme::accent()))
             .into()
     }
 }

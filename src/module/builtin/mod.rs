@@ -88,7 +88,7 @@ pub(crate) fn tile<'a>(
     active: bool,
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1; // cerise
+    let accent = theme::accent(); // cerise
     widget::container(content)
         .padding(14)
         .width(Length::Fixed(width))
@@ -121,7 +121,7 @@ pub(crate) fn toggle_tile<'a>(
     status: &str,
     chevron: Chevron,
 ) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1;
+    let accent = theme::accent();
     // A definite tile height. The full-height divider uses `Length::Fill`, and
     // an *unbounded* Fill collapses the tile's measured height inside flex_row
     // (which made the next row draw on top of it). A fixed card height bounds

@@ -189,7 +189,7 @@ fn mount_label(mount: &str) -> String {
 /// unlike a canvas) with the percentage + label overlaid as native text. Sized
 /// to `side` px; no card — the caller frames it.
 fn gauge_visual<'a>(side: f32, value: f32, label: &str) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1;
+    let accent = theme::accent();
     let dial = widget::svg(widget::svg::Handle::from_memory(
         gauge_svg(value, theme::fg(), accent).into_bytes(),
     ))
@@ -241,7 +241,7 @@ fn push_hist(hist: &mut Vec<f32>, v: f32) {
 /// Wide-tile body (3col+): a history line graph with the label and the current
 /// value overlaid top-left.
 fn graph_tile<'a>(width: f32, value: f32, hist: &[f32], label: &str) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1;
+    let accent = theme::accent();
     let cw = (width - 28.0).max(1.0);
     let gh = 84.0_f32;
     let graph = widget::svg(widget::svg::Handle::from_memory(

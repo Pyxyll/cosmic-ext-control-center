@@ -261,7 +261,7 @@ impl Hub {
                     .height(Length::Fixed(22.0))
                     .center_x(Length::Fill)
                     .center_y(Length::Fill)
-                    .class(theme::card(false, theme::ACCENTS[0].1)),
+                    .class(theme::card(false, theme::accent())),
             );
         }
         row.into()
@@ -374,7 +374,7 @@ impl Hub {
         widget::container(card)
             .padding(16)
             .width(Length::Fill)
-            .class(theme::card(false, theme::ACCENTS[0].1))
+            .class(theme::card(false, theme::accent()))
             .into()
     }
 }
@@ -443,7 +443,7 @@ fn entry_row<'a>(id: InstanceId, e: &ListEntry) -> Element<'a, Message> {
             // The connected entry sits on a steady accent tint; the rest react to
             // hover.
             let base = if active {
-                theme::alpha(theme::ACCENTS[0].1, 0.18)
+                theme::alpha(theme::accent(), 0.18)
             } else {
                 theme::alpha(fg, bg)
             };
@@ -503,7 +503,7 @@ fn expanded_entry<'a>(e: &ListEntry, value: String, id: InstanceId) -> Element<'
     widget::container(content)
         .padding([8, 12])
         .width(Length::Fill)
-        .class(theme::card(true, theme::ACCENTS[0].1))
+        .class(theme::card(true, theme::accent()))
         .into()
 }
 
@@ -762,7 +762,7 @@ impl Hub {
         widget::container(card)
             .padding(12)
             .width(Length::Fill)
-            .class(theme::card(false, theme::ACCENTS[0].1))
+            .class(theme::card(false, theme::accent()))
             .into()
     }
 
@@ -848,7 +848,7 @@ impl Hub {
             .width(Length::Fixed(240.0))
             .height(Length::Fill)
             .padding(16)
-            .class(theme::card(false, theme::ACCENTS[0].1))
+            .class(theme::card(false, theme::accent()))
             .into()
     }
 
