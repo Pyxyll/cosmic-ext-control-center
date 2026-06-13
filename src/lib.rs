@@ -1,4 +1,4 @@
-//! cosmic-control-center: a modular, pluggable control center for COSMIC.
+//! cosmic-ext-control-center: a modular, pluggable control center for COSMIC.
 //!
 //! The hub stores a list of `Module` instances (built-in or, later, plugin)
 //! and renders them as draggable tiles in a reflowing grid. See `module` for

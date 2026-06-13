@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>com.pyxyll.CosmicControlCenter</id>
+  <id>com.pyxyll.CosmicExtControlCenter</id>
 
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>MIT</project_license>
@@ -39,15 +39,15 @@
     </p>
   </description>
 
-  <url type="homepage">https://github.com/Pyxyll/cosmic-control-center</url>
-  <url type="bugtracker">https://github.com/Pyxyll/cosmic-control-center/issues</url>
-  <url type="vcs-browser">https://github.com/Pyxyll/cosmic-control-center</url>
+  <url type="homepage">https://github.com/Pyxyll/cosmic-ext-control-center</url>
+  <url type="bugtracker">https://github.com/Pyxyll/cosmic-ext-control-center/issues</url>
+  <url type="vcs-browser">https://github.com/Pyxyll/cosmic-ext-control-center</url>
 
-  <launchable type="desktop-id">com.pyxyll.CosmicControlCenter.desktop</launchable>
+  <launchable type="desktop-id">com.pyxyll.CosmicExtControlCenter.desktop</launchable>
 
   <provides>
-    <binary>cosmic-control-center</binary>
-    <binary>cosmic-control-center-applet</binary>
+    <binary>cosmic-ext-control-center</binary>
+    <binary>cosmic-ext-control-center-applet</binary>
   </provides>
 
   <categories>
@@ -78,7 +78,7 @@
         display correctly in the editor; the editor is single-instance and the
         applet gear focuses the open editor instead of opening duplicates.</p>
       </description>
-      <url>https://github.com/Pyxyll/cosmic-control-center/releases/tag/v0.1.1</url>
+      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.1</url>
     </release>
     <release version="0.1.0" date="2026-06-12">
       <description>
@@ -86,7 +86,7 @@
         suite of built-in modules, light/dark theming, and a declarative RON
         plugin system.</p>
       </description>
-      <url>https://github.com/Pyxyll/cosmic-control-center/releases/tag/v0.1.0</url>
+      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.0</url>
     </release>
   </releases>
 </component>

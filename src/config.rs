@@ -6,7 +6,7 @@ use cosmic::cosmic_config::{self, CosmicConfigEntry, cosmic_config_derive::Cosmi
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-pub const APP_ID: &str = "com.pyxyll.CosmicControlCenter";
+pub const APP_ID: &str = "com.pyxyll.CosmicExtControlCenter";
 
 /// One placed tile: which module type, its instance id, and its size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -22,7 +22,7 @@ use cosmic::surface::action::{app_popup, destroy_popup};
 /// enough for the full 4-column block (430px) + the view's padding.
 const POPUP_WIDTH: f32 = 500.0;
 
-const APP_ID: &str = "com.pyxyll.CosmicControlCenterApplet";
+const APP_ID: &str = "com.pyxyll.CosmicExtControlCenterApplet";
 
 pub struct Applet {
     core: Core,
@@ -149,11 +149,11 @@ impl cosmic::Application for Applet {
                 if let Some(tx) = &self.token_tx {
                     let _ = tx.send(TokenRequest {
                         app_id: crate::config::APP_ID.to_string(),
-                        exec: "cosmic-control-center".to_string(),
+                        exec: "cosmic-ext-control-center".to_string(),
                     });
                 } else {
                     // No token channel yet — launch without one (won't raise).
-                    let _ = std::process::Command::new("cosmic-control-center").spawn();
+                    let _ = std::process::Command::new("cosmic-ext-control-center").spawn();
                 }
                 Task::none()
             }
