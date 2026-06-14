@@ -1,6 +1,6 @@
 [package]
 name = "cosmic-ext-control-center"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "A modular, pluggable control center for the COSMIC desktop"
 license = "MIT"

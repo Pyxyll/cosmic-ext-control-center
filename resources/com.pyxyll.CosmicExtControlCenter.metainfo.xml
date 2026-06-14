@@ -71,6 +71,18 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.2" date="2026-06-15">
+      <description>
+        <p>Inline Wi-Fi/Bluetooth/VPN selection from the tiles (connect to
+        networks, devices, and profiles, including new secured Wi-Fi); a
+        right-hand config sidebar for per-tile settings; the media tile's style
+        (COSMIC or album art) is now a per-tile option; the add-module list is
+        grouped into categories with single-instance modules; the control center
+        follows the system accent colour; and module data is fetched off the UI
+        thread for a smoother popup.</p>
+      </description>
+      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.2</url>
+    </release>
     <release version="0.1.1" date="2026-06-13">
       <description>
         <p>Bug fixes: system monitor gauges now render correctly in the panel
