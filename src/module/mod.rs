@@ -210,6 +210,13 @@ pub trait Module {
         Task::none()
     }
 
+    /// A user-initiated refresh (the drawer's refresh button). Defaults to the
+    /// normal `refresh`; modules can override to do a deeper scan — e.g. Wi-Fi
+    /// forces a real rescan instead of re-reading the cached network list.
+    fn refresh_manual(&mut self, id: InstanceId) -> Task<Message> {
+        self.refresh(id)
+    }
+
     /// Apply data produced by a background `refresh`. The module downcasts the
     /// payload to its own data type and updates its cached state. Default: no-op
     /// (synchronous modules don't use this path). Named `apply_data`, not

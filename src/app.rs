@@ -951,7 +951,7 @@ impl Hub {
             Message::RefreshEntries(id) => {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                     self.expand_loading = true;
-                    let task = inst.module.refresh(id);
+                    let task = inst.module.refresh_manual(id);
                     self.bump_redraw();
                     return task;
                 }

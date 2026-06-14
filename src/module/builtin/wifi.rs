@@ -46,8 +46,9 @@ struct WifiData {
 }
 
 /// Gather Wi-Fi state off the UI thread. `want_entries` adds the network scan
-/// (only when the picker is open).
-fn fetch(want_entries: bool) -> WifiData {
+/// (only when the picker is open); `rescan` forces NetworkManager to scan afresh
+/// (the manual refresh) rather than reading its cached list.
+fn fetch(want_entries: bool, rescan: bool) -> WifiData {
     let mut d = WifiData::default();
     if let Some(o) = super::out("nmcli radio wifi") {
         d.on = o.trim() == "enabled";
@@ -64,14 +65,21 @@ fn fetch(want_entries: bool) -> WifiData {
     d.rate = super::out("nmcli -t -f active,rate dev wifi")
         .and_then(|o| o.lines().find_map(|l| l.strip_prefix("yes:").and_then(parse_rate)));
     if want_entries {
-        d.nets = scan_networks();
+        d.nets = scan_networks(rescan);
     }
     d
 }
 
 /// Available networks via `nmcli`, strongest-signal-per-SSID, active first.
-fn scan_networks() -> Vec<Net> {
-    let Some(o) = super::out("nmcli -t -f ACTIVE,SIGNAL,SECURITY,SSID dev wifi") else {
+/// `rescan` forces a fresh scan (`--rescan yes`, a few seconds) instead of
+/// reading the cached list — used by the manual refresh.
+fn scan_networks(rescan: bool) -> Vec<Net> {
+    let list_cmd = if rescan {
+        "nmcli -t -f ACTIVE,SIGNAL,SECURITY,SSID dev wifi list --rescan yes"
+    } else {
+        "nmcli -t -f ACTIVE,SIGNAL,SECURITY,SSID dev wifi list --rescan no"
+    };
+    let Some(o) = super::out(list_cmd) else {
         return Vec::new();
     };
     // Saved connection names, to mark which networks connect without a prompt.
@@ -160,7 +168,7 @@ impl WifiModule {
             pending: None,
             password: String::new(),
         };
-        m.set(fetch(false)); // one-time synchronous read so the tile opens populated
+        m.set(fetch(false, false)); // one-time synchronous read so the tile opens populated
         m
     }
 
@@ -295,7 +303,14 @@ impl Module for WifiModule {
 
     fn refresh(&mut self, id: InstanceId) -> Task<Message> {
         let want_entries = self.want_entries;
-        super::fetch_task(id, move || fetch(want_entries))
+        super::fetch_task(id, move || fetch(want_entries, false))
+    }
+
+    /// The refresh button forces a real rescan so new networks actually appear
+    /// (re-reading the cached list looked like nothing happened).
+    fn refresh_manual(&mut self, id: InstanceId) -> Task<Message> {
+        let want_entries = self.want_entries;
+        super::fetch_task(id, move || fetch(want_entries, true))
     }
 
     fn apply_data(&mut self, data: &dyn std::any::Any) {
