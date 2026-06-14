@@ -301,16 +301,19 @@ impl Module for WifiModule {
             .map(|ssid| (ssid.clone(), self.password.clone()))
     }
 
-    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
         let want_entries = self.want_entries;
-        super::fetch_task(id, move || fetch(want_entries, false))
+        Some(Box::new(move || crate::module::Payload::new(fetch(want_entries, false))))
     }
 
     /// The refresh button forces a real rescan so new networks actually appear
     /// (re-reading the cached list looked like nothing happened).
     fn refresh_manual(&mut self, id: InstanceId) -> Task<Message> {
         let want_entries = self.want_entries;
-        super::fetch_task(id, move || fetch(want_entries, true))
+        super::single_fetch(
+            id,
+            Box::new(move || crate::module::Payload::new(fetch(want_entries, true))),
+        )
     }
 
     fn apply_data(&mut self, data: &dyn std::any::Any) {

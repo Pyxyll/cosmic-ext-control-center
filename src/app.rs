@@ -47,18 +47,18 @@ pub struct Hub {
     /// A destructive power action awaiting confirmation.
     pending_power: Option<PowerAction>,
     /// The tile whose inline selection list is currently expanded (Wi-Fi /
-    /// Bluetooth / VPN). Transient view state, reset when the popup reopens.
-    /// Stays set while the drawer animates closed, then cleared in `Frame`.
+    /// Bluetooth / VPN). Stays set while the drawer animates closed, then cleared
+    /// in `Frame`. Reset when the popup reopens.
     expanded: Option<InstanceId>,
-    /// Whether the drawer is opening (true) or closing (false) — drives whether
-    /// `expand_anim` targets the open height or 0.
+    /// Whether the drawer is open. (Open/close is instant — the popup is too
+    /// heavy to re-render at animation framerates; see the perf follow-up.)
     expand_open: bool,
-    /// Animated drawer height in px (eases the inline list in and out).
-    expand_anim: ValueAnim,
     /// A scan for the open drawer is in flight (shows a spinner; cleared when its
     /// results arrive). Only set for user-initiated scans (open / manual
     /// refresh), not the silent background poll.
     expand_loading: bool,
+    /// (Editor) the tile whose option picker (gear) is revealed, if any.
+    config_open: Option<InstanceId>,
     /// Latest battery reading (percent, charging?), refreshed on poll. `None`
     /// on desktops with no battery — the readout is simply hidden.
     battery: Option<(u8, bool)>,
@@ -81,6 +81,8 @@ pub enum Message {
     /// Pick a tile's configurable option in the editor (e.g. a disk gauge's
     /// mount): (instance, index into the module's `option_choices`).
     SetOption(InstanceId, usize),
+    /// (Editor) toggle the option picker (gear) for a tile.
+    ToggleConfig(InstanceId),
     /// Toggle a tile's inline selection list (Wi-Fi networks, devices, VPN
     /// profiles). Expanding triggers a one-off scan of that module.
     Expand(InstanceId),
@@ -90,8 +92,11 @@ pub enum Message {
     Reordered(Vec<InstanceId>),
     /// A module control changed: (instance, control id, new value).
     Control(InstanceId, String, ControlValue),
-    /// A module's background refresh finished; its data is applied to the tile.
+    /// A module's on-demand background refresh finished (drawer open / manual).
     StateLoaded(InstanceId, Payload),
+    /// A poll's batched refresh finished — all module results applied in one go,
+    /// so the popup repaints once per poll rather than once per module.
+    StateBatch(Vec<(InstanceId, Payload)>),
     /// Periodic tick — refresh polled module state (e.g. manifest `get`s).
     Poll,
     /// ~60fps tick while a module is animating (drives the redraw; no-op state).
@@ -190,6 +195,13 @@ impl Hub {
 
     /// Instantiate a module by id and append it as a new tile.
     fn add_module(&mut self, module_id: &str) {
+        // Single-instance modules can't be added twice (the palette disables
+        // them too, but guard here as well).
+        if !builtin::allows_multiple(module_id)
+            && self.instances.iter().any(|i| i.module.descriptor().id == module_id)
+        {
+            return;
+        }
         if let Some(m) = self.make(module_id, &Default::default()) {
             let id = self.config.next_id;
             self.config.next_id += 1;
@@ -514,50 +526,45 @@ fn expanded_entry<'a>(e: &ListEntry, value: String, id: InstanceId) -> Element<'
         .into()
 }
 
-/// Estimated natural height (px) of a module's selection drawer — the target the
-/// open animation eases to. Matches `selection_panel`'s chrome, (capped) list
-/// area, and any pending input block.
-fn drawer_target(module: &dyn Module) -> f32 {
-    let entries = module.entries().len();
-    let chrome = 24.0 + 30.0 + 10.0; // card padding + header + spacing
-    let mut content = if entries == 0 { 36.0 } else { entries as f32 * 52.0 };
-    // An expanded row's password field (secure input + button row) adds to the
-    // list content, which is then capped/scrolled.
-    if module.pending_input().is_some() {
-        content += 100.0;
-    }
-    chrome + content.min(260.0)
-}
-
 /// A full-width row in the editor sidebar: icon + module name, tap to add.
-fn sidebar_item<'a>(icon: &str, name: &str, msg: Message) -> Element<'a, Message> {
-    let content = widget::Row::new()
+fn sidebar_item<'a>(icon: &str, name: &str, msg: Message, enabled: bool) -> Element<'a, Message> {
+    let mut content = widget::Row::new()
         .spacing(10)
         .align_y(Alignment::Center)
         .push(widget::icon::from_name(icon).size(18))
         .push(widget::text::body(name.to_string()));
-    let style = |bg: f32| {
+    // A check on the right marks an already-placed single-instance module.
+    if !enabled {
+        content = content
+            .push(widget::space::horizontal())
+            .push(widget::icon::from_name("object-select-symbolic").size(14));
+    }
+    let style = move |bg: f32| {
         move |_focused: bool, t: &cosmic::Theme| {
             let fg: cosmic::iced::Color = t.cosmic().background.on.into();
             let mut s = cosmic::widget::button::Style::new();
             s.background = Some(cosmic::iced::Background::Color(theme::alpha(fg, bg)));
             s.border_radius = 8.0.into();
-            s.icon_color = Some(fg);
-            s.text_color = Some(fg);
+            // Dim a disabled (already-placed) row so it reads as unavailable.
+            let alpha = if enabled { 1.0 } else { 0.4 };
+            s.icon_color = Some(theme::alpha(fg, alpha));
+            s.text_color = Some(theme::alpha(fg, alpha));
             s
         }
     };
-    widget::button::custom(content)
+    let mut btn = widget::button::custom(content)
         .width(Length::Fill)
         .padding([8, 10])
         .class(cosmic::theme::Button::Custom {
             active: Box::new(style(0.0)),
             disabled: Box::new(move |t| style(0.0)(false, t)),
-            hovered: Box::new(style(0.10)),
-            pressed: Box::new(style(0.16)),
-        })
-        .on_press(msg)
-        .into()
+            hovered: Box::new(style(if enabled { 0.10 } else { 0.0 })),
+            pressed: Box::new(style(if enabled { 0.16 } else { 0.0 })),
+        });
+    if enabled {
+        btn = btn.on_press(msg);
+    }
+    btn.into()
 }
 
 impl Hub {
@@ -576,8 +583,8 @@ impl Hub {
             pending_power: None,
             expanded: None,
             expand_open: false,
-            expand_anim: ValueAnim::new(0.0),
             expand_loading: false,
+            config_open: None,
             battery: read_battery(),
             redraw_until: None,
         };
@@ -609,7 +616,6 @@ impl Hub {
         // Each popup open starts collapsed.
         self.expanded = None;
         self.expand_open = false;
-        self.expand_anim = ValueAnim::new(0.0);
         self.expand_loading = false;
         let fresh = Config::load();
         if fresh.instances == self.config.instances {
@@ -631,10 +637,17 @@ impl Hub {
                 let w = inst.width.current();
                 // A small control bar ABOVE each tile (resize + remove) — kept
                 // outside the card so it never overlaps the tile's own controls.
+                let has_options = !inst.module.option_choices().is_empty();
                 let mut actions = widget::Row::new()
                     .spacing(6)
                     .align_y(Alignment::Center)
                     .push(widget::space::horizontal());
+                // A gear (only when the module has an option) reveals the picker
+                // below the tile, rather than always showing it.
+                if has_options {
+                    actions = actions
+                        .push(round_btn("emblem-system-symbolic", Message::ToggleConfig(inst.id)));
+                }
                 if inst.module.descriptor().resizable {
                     actions = actions.push(round_btn(
                         "view-fullscreen-symbolic",
@@ -652,22 +665,9 @@ impl Hub {
                 let body = widget::container(inst.module.view(inst.id, true, w))
                     .width(Length::Fixed(w))
                     .clip(true);
-                let mut tile = widget::Column::new().spacing(2).push(bar);
-                // Modules with a configurable option (e.g. a disk gauge's mount)
-                // get a picker dropdown above the tile body, in edit mode only.
-                let choices = inst.module.option_choices();
-                if !choices.is_empty() {
-                    let iid = inst.id;
-                    let picker = widget::dropdown(
-                        choices,
-                        Some(inst.module.option_selected()),
-                        move |i| Message::SetOption(iid, i),
-                    );
-                    tile = tile.push(
-                        widget::container(picker).width(Length::Fixed(w)).padding([0, 6]),
-                    );
-                }
-                tile = tile.push(body);
+                // The gear selects the tile; its settings show in the right-hand
+                // config sidebar (see `config_sidebar`), not inline.
+                let tile = widget::Column::new().spacing(2).push(bar).push(body);
                 row = row.push(inst.id, tile);
             }
             row.into()
@@ -708,13 +708,9 @@ impl Hub {
                     if let Some(inst) =
                         self.expanded.and_then(|id| self.instances.iter().find(|i| i.id == id))
                     {
-                        // Clip the drawer to its animated height so it slides in
-                        // and out (and neighbours below reflow with it).
-                        col = col.push(
-                            widget::container(self.selection_panel(inst))
-                                .max_height(self.expand_anim.current().max(0.0))
-                                .clip(true),
-                        );
+                        // Instant: the popup is too heavy to re-render smoothly at
+                        // animation framerates (see the perf follow-up issue).
+                        col = col.push(self.selection_panel(inst));
                     }
                 }
             }
@@ -842,25 +838,115 @@ impl Hub {
                 .center_x(Length::Fill),
         );
 
-        widget::Row::new()
+        let mut row = widget::Row::new()
             .height(Length::Fill)
             .push(self.sidebar())
-            .push(widget::container(canvas).width(Length::Fill).height(Length::Fill))
+            .push(widget::container(canvas).width(Length::Fill).height(Length::Fill));
+        // Right-hand config surface for the selected tile (its gear sets
+        // `config_open`). Only configurable tiles have a gear, so this appears
+        // only when there's something to configure.
+        if let Some(inst) = self
+            .config_open
+            .and_then(|id| self.instances.iter().find(|i| i.id == id))
+        {
+            row = row.push(self.config_sidebar(inst));
+        }
+        row.into()
+    }
+
+    /// The editor's right sidebar: settings for the selected tile. Grows as
+    /// modules gain configurable options; for now the disk gauge's mount.
+    fn config_sidebar<'a>(&'a self, inst: &'a Instance) -> Element<'a, Message> {
+        let id = inst.id;
+        let desc = inst.module.descriptor();
+        let header = widget::Row::new()
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .push(widget::icon::from_name(desc.icon.as_str()).size(18))
+            .push(widget::text::title4(desc.name.clone()))
+            .push(widget::space::horizontal())
+            .push(round_btn("window-close-symbolic", Message::ToggleConfig(id)));
+
+        let mut inner = widget::Column::new()
+            .spacing(16)
+            .push(header)
+            .push(widget::divider::horizontal::default());
+
+        let choices = inst.module.option_choices();
+        if choices.is_empty() {
+            inner = inner.push(
+                widget::text::caption("No settings for this tile.")
+                    .class(cosmic::style::Text::Custom(theme::dim_text)),
+            );
+        } else {
+            let picker = widget::dropdown(
+                choices,
+                Some(inst.module.option_selected()),
+                move |i| Message::SetOption(id, i),
+            );
+            inner = inner.push(
+                widget::Column::new()
+                    .spacing(6)
+                    .push(widget::text::body(inst.module.option_label()))
+                    .push(picker),
+            );
+        }
+
+        widget::container(inner)
+            .width(Length::Fixed(260.0))
+            .height(Length::Fill)
+            .padding(16)
+            .class(theme::card(false, theme::accent()))
             .into()
     }
 
-    /// The editor's left sidebar: a scrollable "Add a module" list.
+    /// The editor's left sidebar: the "Add a module" list, grouped into
+    /// categories (alphabetical within each). Single-instance modules already
+    /// placed are shown disabled; disk and divider can always be added again.
     fn sidebar(&self) -> Element<'_, Message> {
+        let placed: std::collections::HashSet<String> = self
+            .instances
+            .iter()
+            .map(|i| i.module.descriptor().id.clone())
+            .collect();
+        let descs = self.available();
+
         let mut list = widget::Column::new().spacing(4);
-        for d in self.available() {
-            list = list.push(sidebar_item(&d.icon, &d.name, Message::AddModule(d.id.clone())));
+        for cat in builtin::CATEGORIES {
+            let mut items: Vec<&ModuleDescriptor> =
+                descs.iter().filter(|d| builtin::category(&d.id) == cat).collect();
+            if items.is_empty() {
+                continue;
+            }
+            items.sort_by_key(|d| d.name.to_lowercase());
+            list = list.push(
+                widget::container(
+                    widget::text::caption(cat)
+                        .class(cosmic::style::Text::Custom(theme::dim_text)),
+                )
+                .padding([8, 10, 2, 10]),
+            );
+            for d in items {
+                let enabled = builtin::allows_multiple(&d.id) || !placed.contains(&d.id);
+                list = list.push(sidebar_item(
+                    &d.icon,
+                    &d.name,
+                    Message::AddModule(d.id.clone()),
+                    enabled,
+                ));
+            }
         }
+
         let inner = widget::Column::new()
             .spacing(12)
             .push(widget::text::title4("Add a module"))
-            .push(widget::scrollable(list).height(Length::Fill));
+            // Right padding so the scrollbar doesn't overlap the row check marks.
+            .push(
+                widget::scrollable(widget::container(list).padding([0, 12, 0, 0]))
+                    .height(Length::Fill),
+            );
         widget::container(inner)
-            .width(Length::Fixed(240.0))
+            .width(Length::Fixed(264.0))
             .height(Length::Fill)
             .padding(16)
             .class(theme::card(false, theme::accent()))
@@ -875,6 +961,7 @@ impl Hub {
                     self.edit = !self.edit;
                     if !self.edit {
                         self.palette_open = false;
+                        self.config_open = None;
                     }
                     self.bump_redraw();
                 }
@@ -923,16 +1010,18 @@ impl Hub {
                     self.persist();
                 }
             }
+            Message::ToggleConfig(id) => {
+                self.config_open = if self.config_open == Some(id) { None } else { Some(id) };
+                self.bump_redraw();
+            }
             Message::Expand(id) => {
-                // Toggle: tapping the open tile's chevron animates it closed;
-                // otherwise flag the module to include its list and animate open.
-                // The `expand` control sets that flag; the list itself is fetched
-                // off-thread by the dispatched refresh (and re-measured in
-                // StateLoaded once it arrives).
+                // Toggle the drawer. The `expand` control sets the module's
+                // "wants entries" flag; the list is fetched off-thread by the
+                // dispatched refresh. Closing eases to 0 then `Frame` clears it.
                 if self.expanded == Some(id) && self.expand_open {
+                    self.expanded = None;
                     self.expand_open = false;
                     self.expand_loading = false;
-                    self.expand_anim.set(0.0);
                     if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                         let _ = inst.module.on_control("expand", ControlValue::Bool(false));
                     }
@@ -942,7 +1031,6 @@ impl Hub {
                     self.expanded = Some(id);
                     self.expand_open = true;
                     self.expand_loading = true;
-                    self.expand_anim.set(drawer_target(inst.module.as_ref()));
                     let task = inst.module.refresh(id);
                     self.bump_redraw();
                     return task;
@@ -958,14 +1046,23 @@ impl Hub {
             }
             Message::Reordered(order) => self.reorder(order),
             Message::Poll => {
-                // Each module refreshes off the UI thread (cheap sync modules
-                // just update themselves and return Task::none()). The expanded
-                // module also re-scans its list, since its "wants entries" flag
-                // is set — no separate synchronous rescan needed.
-                let tasks: Vec<_> =
-                    self.instances.iter_mut().map(|i| i.module.refresh(i.id)).collect();
+                // Collect each module's off-thread fetch into one batch (applied
+                // together → a single repaint per poll). Sync, cheap modules
+                // (sysmon /proc) have no job and just update themselves in place.
+                let mut jobs = Vec::new();
+                for i in self.instances.iter_mut() {
+                    match i.module.fetch_job() {
+                        Some(job) => jobs.push((i.id, job)),
+                        None => {
+                            let _ = i.module.refresh(i.id);
+                        }
+                    }
+                }
                 self.battery = read_battery();
-                return Task::batch(tasks);
+                if jobs.is_empty() {
+                    return Task::none();
+                }
+                return builtin::poll_batch(jobs);
             }
             // The message itself drives a redraw; animated values interpolate
             // off the wall clock in their own view(). Also reap any tile whose
@@ -973,10 +1070,6 @@ impl Hub {
             Message::Frame => {
                 self.instances
                     .retain(|i| !(i.removing && !i.width.animating()));
-                // Once a close animation settles, drop the drawer entirely.
-                if !self.expand_open && self.expanded.is_some() && !self.expand_anim.animating() {
-                    self.expanded = None;
-                }
             }
             Message::Power(a) => {
                 if a.needs_confirm() {
@@ -995,10 +1088,8 @@ impl Hub {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                     let task = inst.module.on_control(&control, value);
                     // If this changed the open drawer (e.g. a Wi-Fi password
-                    // prompt appeared/closed), re-measure so it animates to fit.
+                    // prompt appeared/closed), repaint for the new layout.
                     if self.expand_open && self.expanded == Some(id) {
-                        let height = drawer_target(inst.module.as_ref());
-                        self.expand_anim.set(height);
                         self.bump_redraw();
                     }
                     return task;
@@ -1008,22 +1099,18 @@ impl Hub {
                 if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
                     inst.module.apply_data(payload.0.as_ref());
                 }
-                // Results arrived for the open drawer — stop the spinner and
-                // re-measure so it animates to fit the now-populated list.
+                // On-demand result (drawer open / manual): stop the spinner.
                 if self.expanded == Some(id) {
                     self.expand_loading = false;
                 }
-                if self.expand_open && self.expanded == Some(id) {
-                    let h = self
-                        .instances
-                        .iter()
-                        .find(|i| i.id == id)
-                        .map(|i| drawer_target(i.module.as_ref()));
-                    if let Some(h) = h {
-                        self.expand_anim.set(h);
+            }
+            Message::StateBatch(results) => {
+                // One poll's worth of results, applied together → a single repaint.
+                for (id, payload) in &results {
+                    if let Some(inst) = self.instances.iter_mut().find(|i| i.id == *id) {
+                        inst.module.apply_data(payload.0.as_ref());
                     }
                 }
-                self.bump_redraw();
             }
         }
         Task::none()
@@ -1042,8 +1129,7 @@ impl Hub {
         let bursting = self
             .redraw_until
             .is_some_and(|t| std::time::Instant::now() < t);
-        let animating = self.expand_anim.animating()
-            || self.expand_loading // keep ticking so the spinner spins
+        let animating = self.expand_loading // keep ticking so the spinner spins
             || self.instances.iter().any(|i| i.module.animating() || i.width.animating());
         if bursting || animating {
             subs.push(time::every(Duration::from_millis(16)).map(|_| Message::Frame));

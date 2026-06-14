@@ -224,9 +224,9 @@ impl Module for BluetoothModule {
         self.entries.clone()
     }
 
-    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
         let want_entries = self.want_entries;
-        super::fetch_task(id, move || fetch(want_entries))
+        Some(Box::new(move || crate::module::Payload::new(fetch(want_entries))))
     }
 
     fn apply_data(&mut self, data: &dyn std::any::Any) {

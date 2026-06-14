@@ -15,12 +15,27 @@ use cosmic::widget;
 use zbus::blocking::Connection;
 
 /// The two media tile looks. `Cosmic` follows the design system (a plain card);
-/// `Framed` is the custom blurred album-art backdrop. Picked at add time — each
-/// is its own palette entry / module id.
+/// `Framed` is the custom blurred album-art backdrop. Chosen per-instance in the
+/// config sidebar (the "Style" option), persisted as the "style" param.
 #[derive(Clone, Copy, PartialEq)]
 enum Style {
     Cosmic,
     Framed,
+}
+
+impl Style {
+    fn from_param(s: Option<&str>) -> Self {
+        match s {
+            Some("framed") => Style::Framed,
+            _ => Style::Cosmic,
+        }
+    }
+    fn param(self) -> &'static str {
+        match self {
+            Style::Cosmic => "cosmic",
+            Style::Framed => "framed",
+        }
+    }
 }
 
 pub struct MediaModule {
@@ -125,17 +140,24 @@ fn fetch(conn: Option<Connection>, cur_art_path: Option<String>) -> MediaData {
 }
 
 impl MediaModule {
-    /// COSMIC-styled media tile (plain card) — the default.
+    /// Default media tile (COSMIC style). Style is a per-instance option chosen
+    /// in the config sidebar, not a separate module.
     pub fn new() -> Self {
-        Self::with_style(Style::Cosmic, "builtin.media", "Media")
+        Self::with_style(Style::Cosmic)
     }
 
-    /// The custom blurred album-art backdrop look.
-    pub fn new_framed() -> Self {
-        Self::with_style(Style::Framed, "builtin.media_art", "Media (album art)")
+    /// Build from saved per-instance params (the "style" key).
+    pub fn from_params(params: &std::collections::BTreeMap<String, String>) -> Self {
+        Self::with_style(Style::from_param(params.get("style").map(String::as_str)))
     }
 
-    fn with_style(style: Style, id: &str, name: &str) -> Self {
+    /// Legacy `builtin.media_art` instances → the album-art style; they persist
+    /// back as `builtin.media` with style=framed on the next save.
+    pub fn framed_style() -> Self {
+        Self::with_style(Style::Framed)
+    }
+
+    fn with_style(style: Style) -> Self {
         // No D-Bus connect / art decode in the editor preview.
         let conn = if super::preview() {
             None
@@ -144,8 +166,8 @@ impl MediaModule {
         };
         let mut m = Self {
             desc: ModuleDescriptor {
-                id: id.into(),
-                name: name.into(),
+                id: "builtin.media".into(),
+                name: "Media".into(),
                 icon: "applications-multimedia-symbolic".into(),
                 size: TileSize::Large,
                 resizable: true,
@@ -394,16 +416,37 @@ impl Module for MediaModule {
         Task::none()
     }
 
-    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
         let conn = self.conn.clone();
         let cur = self.art.as_ref().map(|(p, ..)| p.clone());
-        super::fetch_task(id, move || fetch(conn, cur))
+        Some(Box::new(move || crate::module::Payload::new(fetch(conn, cur))))
     }
 
     fn apply_data(&mut self, data: &dyn std::any::Any) {
         if let Some(d) = data.downcast_ref::<MediaData>() {
             self.set(d.clone());
         }
+    }
+
+    // --- per-instance style option (config sidebar) ---
+
+    fn option_label(&self) -> &'static str {
+        "Style"
+    }
+    fn option_choices(&self) -> Vec<String> {
+        vec!["COSMIC".to_string(), "Album art".to_string()]
+    }
+    fn option_selected(&self) -> usize {
+        match self.style {
+            Style::Cosmic => 0,
+            Style::Framed => 1,
+        }
+    }
+    fn set_option(&mut self, index: usize) {
+        self.style = if index == 1 { Style::Framed } else { Style::Cosmic };
+    }
+    fn params(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([("style".to_string(), self.style.param().to_string())])
     }
 }
 

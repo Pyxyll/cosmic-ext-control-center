@@ -201,13 +201,24 @@ pub trait Module {
         Subscription::none()
     }
 
-    /// Poll current state. A module with cheap I/O (e.g. sysmon reading /proc)
-    /// may update itself synchronously here and return `Task::none()`; one with
-    /// blocking I/O (subprocess, D-Bus) should instead return a `Task` that runs
-    /// the work off the UI thread (see `builtin::fetch_task`) and delivers the
-    /// result to `apply` via `Message::StateLoaded`. `id` tags that result.
-    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
-        Task::none()
+    /// The module's blocking I/O as a `Send` closure producing its data payload,
+    /// or `None` if it has no off-thread work (stateless, or updates cheaply in
+    /// `refresh`). The hub batches these from every module into ONE background
+    /// task per poll, applying all results in a single `StateBatch` so the popup
+    /// repaints once per poll instead of once per module.
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> Payload + Send>> {
+        None
+    }
+
+    /// Poll current state on demand (drawer open). The default dispatches this
+    /// module's `fetch_job` off the UI thread and delivers it via `StateLoaded`.
+    /// A module with cheap synchronous I/O (e.g. sysmon reading /proc) overrides
+    /// this to update itself in place and return `Task::none()`.
+    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+        match self.fetch_job() {
+            Some(job) => builtin::single_fetch(id, job),
+            None => Task::none(),
+        }
     }
 
     /// A user-initiated refresh (the drawer's refresh button). Defaults to the
@@ -238,6 +249,11 @@ pub trait Module {
     /// Index (into `option_choices`) of the currently-selected value.
     fn option_selected(&self) -> usize {
         0
+    }
+
+    /// Label shown next to the option picker in the editor (e.g. "Mount").
+    fn option_label(&self) -> &'static str {
+        "Option"
     }
 
     /// Apply a picker choice (an index into `option_choices`).

@@ -325,9 +325,9 @@ impl Module for ManifestModule {
         Task::none()
     }
 
-    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
         let controls = self.controls.clone();
-        super::builtin::fetch_task(id, move || fetch(controls, true))
+        Some(Box::new(move || crate::module::Payload::new(fetch(controls, true))))
     }
 
     fn apply_data(&mut self, data: &dyn std::any::Any) {

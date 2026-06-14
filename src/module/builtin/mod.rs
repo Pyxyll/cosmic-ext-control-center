@@ -40,7 +40,6 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
         VolumeModule::new().descriptor().clone(),
         MicrophoneModule::new().descriptor().clone(),
         MediaModule::new().descriptor().clone(),
-        MediaModule::new_framed().descriptor().clone(),
         PowerProfileModule::new().descriptor().clone(),
         WifiModule::new().descriptor().clone(),
         VpnModule::new().descriptor().clone(),
@@ -56,14 +55,41 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
     ]
 }
 
+/// Whether more than one of this module type may be placed. Most are
+/// single-instance (one Wi-Fi toggle is plenty); disk gauges (per mount) and
+/// dividers (per section) are the exceptions. Unknown ids (plugins) are single.
+pub fn allows_multiple(id: &str) -> bool {
+    matches!(id, "builtin.disk" | "builtin.divider")
+}
+
+/// Palette category for grouping the "Add a module" list. Unknown ids (plugins)
+/// fall under "Plugins". `CATEGORIES` is the display order.
+pub const CATEGORIES: [&str; 6] =
+    ["Audio", "Network", "Monitors", "System", "Layout", "Plugins"];
+
+pub fn category(id: &str) -> &'static str {
+    match id {
+        "builtin.volume" | "builtin.microphone" | "builtin.media" | "builtin.media_art" => "Audio",
+        "builtin.wifi" | "builtin.vpn" | "builtin.bluetooth" | "builtin.airplane" => "Network",
+        "builtin.cpu" | "builtin.gpu" | "builtin.ram" | "builtin.disk" | "builtin.sysmon" => {
+            "Monitors"
+        }
+        "builtin.power_profile" | "builtin.appearance" => "System",
+        "builtin.divider" => "Layout",
+        _ => "Plugins",
+    }
+}
+
 /// Instantiate a built-in by its module id, seeding any saved per-instance
 /// params (e.g. a disk gauge's mount). Returns None for unknown ids.
 pub fn make(id: &str, params: &std::collections::BTreeMap<String, String>) -> Option<Box<dyn Module>> {
     match id {
         "builtin.volume" => Some(Box::new(VolumeModule::new())),
         "builtin.microphone" => Some(Box::new(MicrophoneModule::new())),
-        "builtin.media" => Some(Box::new(MediaModule::new())),
-        "builtin.media_art" => Some(Box::new(MediaModule::new_framed())),
+        "builtin.media" => Some(Box::new(MediaModule::from_params(params))),
+        // Legacy id from when the album-art look was a separate module; maps to
+        // a media tile with style=framed and re-saves as builtin.media.
+        "builtin.media_art" => Some(Box::new(MediaModule::framed_style())),
         "builtin.power_profile" => Some(Box::new(PowerProfileModule::new())),
         "builtin.wifi" => Some(Box::new(WifiModule::new())),
         "builtin.vpn" => Some(Box::new(VpnModule::new())),
@@ -345,17 +371,37 @@ pub(crate) fn run(cmd: &str) {
     let _ = Command::new("sh").arg("-c").arg(cmd).spawn();
 }
 
-/// Run a module's blocking fetch `f` on tokio's blocking pool (off the UI
-/// thread) and deliver the result to the instance's `apply` via
-/// `Message::StateLoaded`. `D::default()` is used if the worker panics. This is
-/// how subprocess/D-Bus modules refresh without hitching the UI.
-pub(crate) fn fetch_task<D, F>(id: InstanceId, f: F) -> cosmic::app::Task<Message>
-where
-    D: std::any::Any + Send + Sync + Default,
-    F: FnOnce() -> D + Send + 'static,
-{
+use crate::module::Payload;
+
+/// A boxed, `Send` closure producing a module's data payload off the UI thread.
+pub(crate) type FetchJob = Box<dyn FnOnce() -> Payload + Send>;
+
+/// Run one module's `job` on tokio's blocking pool and deliver it via
+/// `Message::StateLoaded` (on-demand refresh: drawer open / manual rescan).
+pub(crate) fn single_fetch(id: InstanceId, job: FetchJob) -> cosmic::app::Task<Message> {
     cosmic::task::future(async move {
-        let data = tokio::task::spawn_blocking(f).await.unwrap_or_default();
-        cosmic::action::app(Message::StateLoaded(id, crate::module::Payload::new(data)))
+        let payload = tokio::task::spawn_blocking(job)
+            .await
+            .unwrap_or_else(|_| Payload::new(()));
+        cosmic::action::app(Message::StateLoaded(id, payload))
+    })
+}
+
+/// Run every module's `job` on the blocking pool in parallel, then deliver all
+/// results in ONE `Message::StateBatch` — so a poll repaints the popup once,
+/// not once per module (the source of the per-poll input hitching).
+pub(crate) fn poll_batch(jobs: Vec<(InstanceId, FetchJob)>) -> cosmic::app::Task<Message> {
+    cosmic::task::future(async move {
+        let handles: Vec<_> = jobs
+            .into_iter()
+            .map(|(id, job)| tokio::task::spawn_blocking(move || (id, job())))
+            .collect();
+        let mut results = Vec::with_capacity(handles.len());
+        for h in handles {
+            if let Ok(r) = h.await {
+                results.push(r);
+            }
+        }
+        cosmic::action::app(Message::StateBatch(results))
     })
 }

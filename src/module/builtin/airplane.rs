@@ -90,8 +90,8 @@ impl Module for AirplaneModule {
         Task::none()
     }
 
-    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
-        super::fetch_task(id, fetch)
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
+        Some(Box::new(|| crate::module::Payload::new(fetch())))
     }
 
     fn apply_data(&mut self, data: &dyn std::any::Any) {
