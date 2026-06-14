@@ -15,6 +15,28 @@ pub struct MicrophoneModule {
     available: bool,
 }
 
+#[derive(Default)]
+struct MicData {
+    level: f32,
+    muted: bool,
+    available: bool,
+}
+
+/// Read the default source level off the UI thread. "Volume: 0.40 [MUTED]".
+fn fetch() -> MicData {
+    let mut d = MicData::default();
+    if let Some(o) = super::out(&format!("wpctl get-volume {SRC}")) {
+        if let Some(num) = o.split_whitespace().nth(1) {
+            if let Ok(v) = num.parse::<f32>() {
+                d.level = v.clamp(0.0, 1.5);
+                d.muted = o.contains("[MUTED]");
+                d.available = true;
+            }
+        }
+    }
+    d
+}
+
 impl MicrophoneModule {
     pub fn new() -> Self {
         let mut m = Self {
@@ -29,20 +51,15 @@ impl MicrophoneModule {
             muted: false,
             available: false,
         };
-        m.read();
+        m.set(fetch());
         m
     }
 
-    fn read(&mut self) {
-        // "Volume: 0.40 [MUTED]"
-        if let Some(o) = super::out(&format!("wpctl get-volume {SRC}")) {
-            if let Some(num) = o.split_whitespace().nth(1) {
-                if let Ok(v) = num.parse::<f32>() {
-                    self.level = v.clamp(0.0, 1.5);
-                    self.muted = o.contains("[MUTED]");
-                    self.available = true;
-                }
-            }
+    fn set(&mut self, d: MicData) {
+        if d.available {
+            self.level = d.level;
+            self.muted = d.muted;
+            self.available = true;
         }
     }
 }
@@ -94,8 +111,17 @@ impl Module for MicrophoneModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
+        Some(Box::new(|| crate::module::Payload::new(fetch())))
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<MicData>() {
+            self.set(MicData {
+                level: d.level,
+                muted: d.muted,
+                available: d.available,
+            });
+        }
     }
 }

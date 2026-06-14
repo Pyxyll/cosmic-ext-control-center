@@ -150,26 +150,34 @@ fn capacity_tile<'a>(width: f32, label: &str, info: DiskInfo) -> Element<'a, Mes
     super::tile(width, false, col)
 }
 
-/// Real, mounted filesystems backed by a block device (`/dev/...`), from
-/// /proc/mounts — the choices the disk gauge can target. Deduped by mount point
-/// and sorted, so the picker order is stable.
+/// Real, mounted filesystems the disk gauge can target, from /proc/mounts.
+/// Deduped by **device**, not mount point: btrfs subvolumes (/, /home, /var/log,
+/// …) share one device and report identical usage, so listing each is just
+/// noise — collapse them to one entry (the shortest mount point, e.g. "/") per
+/// device. Distinct physical filesystems (a separate /boot, /mnt/storage) stay.
 fn list_mounts() -> Vec<String> {
     let Ok(s) = fs::read_to_string("/proc/mounts") else {
         return vec!["/".to_string()];
     };
-    let mut mounts: Vec<String> = s
-        .lines()
-        .filter_map(|l| {
-            let mut it = l.split_whitespace();
-            let dev = it.next()?;
-            let mnt = it.next()?;
-            // Only block-device-backed filesystems (skips proc, sysfs, tmpfs,
-            // cgroup, and other pseudo mounts).
-            dev.starts_with("/dev/").then(|| mnt.to_string())
-        })
-        .collect();
+    // (device, chosen mount point) — keep the shortest mount point per device.
+    let mut by_dev: Vec<(String, String)> = Vec::new();
+    for l in s.lines() {
+        let mut it = l.split_whitespace();
+        let (Some(dev), Some(mnt)) = (it.next(), it.next()) else {
+            continue;
+        };
+        // Only block-device-backed filesystems (skips proc, sysfs, tmpfs, …).
+        if !dev.starts_with("/dev/") {
+            continue;
+        }
+        match by_dev.iter_mut().find(|(d, _)| d == dev) {
+            Some((_, m)) if mnt.len() < m.len() => *m = mnt.to_string(),
+            Some(_) => {}
+            None => by_dev.push((dev.to_string(), mnt.to_string())),
+        }
+    }
+    let mut mounts: Vec<String> = by_dev.into_iter().map(|(_, m)| m).collect();
     mounts.sort();
-    mounts.dedup();
     if mounts.is_empty() {
         mounts.push("/".to_string());
     }
@@ -189,16 +197,22 @@ fn mount_label(mount: &str) -> String {
 /// unlike a canvas) with the percentage + label overlaid as native text. Sized
 /// to `side` px; no card — the caller frames it.
 fn gauge_visual<'a>(side: f32, value: f32, label: &str) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1;
+    let accent = theme::accent();
+    // Quantize to whole percent so the SVG bytes are byte-identical across the
+    // ease frames that land on the same percent. iced caches rasterized SVGs by
+    // content hash, so this turns ~60 re-rasters/sec (per gauge, during a value
+    // animation) into one per percent step — the main cause of input lag when
+    // several gauges animate at once.
+    let pct = (value.clamp(0.0, 1.0) * 100.0).round();
     let dial = widget::svg(widget::svg::Handle::from_memory(
-        gauge_svg(value, theme::fg(), accent).into_bytes(),
+        gauge_svg(pct / 100.0, theme::fg(), accent).into_bytes(),
     ))
     .width(Length::Fixed(side))
     .height(Length::Fixed(side));
 
     let text = widget::Column::new()
         .align_x(Alignment::Center)
-        .push(widget::text(format!("{:.0}%", value * 100.0)).size(side * 0.22))
+        .push(widget::text(format!("{pct:.0}%")).size(side * 0.22))
         .push(
             widget::text(label.to_string())
                 .size((side * 0.11).max(8.0))
@@ -241,7 +255,7 @@ fn push_hist(hist: &mut Vec<f32>, v: f32) {
 /// Wide-tile body (3col+): a history line graph with the label and the current
 /// value overlaid top-left.
 fn graph_tile<'a>(width: f32, value: f32, hist: &[f32], label: &str) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1;
+    let accent = theme::accent();
     let cw = (width - 28.0).max(1.0);
     let gh = 84.0_f32;
     let graph = widget::svg(widget::svg::Handle::from_memory(
@@ -332,7 +346,7 @@ impl Module for CpuModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         self.read();
         Task::none()
     }
@@ -374,7 +388,7 @@ impl Module for RamModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         if let Some(r) = read_ram() {
             self.value.set(r);
             push_hist(&mut self.hist, r);
@@ -424,7 +438,7 @@ impl Module for GpuModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         if let Some(p) = &self.path {
             if let Some(g) = read_gpu(p) {
                 self.value.set(g);
@@ -490,7 +504,7 @@ impl Module for DiskModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         self.read();
         Task::none()
     }
@@ -505,6 +519,9 @@ impl Module for DiskModule {
     }
     fn option_selected(&self) -> usize {
         list_mounts().iter().position(|m| m == &self.mount).unwrap_or(0)
+    }
+    fn option_label(&self) -> &'static str {
+        "Mount"
     }
     fn set_option(&mut self, index: usize) {
         if let Some(m) = list_mounts().get(index) {
@@ -603,7 +620,7 @@ impl Module for SysMonModule {
     fn on_control(&mut self, _c: &str, _v: ControlValue) -> Task<Message> {
         Task::none()
     }
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         if let Some((total, idle)) = read_cpu_times() {
             if let Some((pt, pi)) = self.prev {
                 let dt = total.saturating_sub(pt);

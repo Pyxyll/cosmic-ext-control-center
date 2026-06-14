@@ -1,8 +1,8 @@
 //! Bluetooth quick toggle via `bluetoothctl` (power on/off). Split pill: tap to
-//! toggle, chevron opens COSMIC bluetooth settings.
+//! toggle, chevron expands an inline device picker.
 
 use crate::app::Message;
-use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, TileSize};
+use crate::module::{ControlValue, InstanceId, ListEntry, Module, ModuleDescriptor, TileSize};
 use cosmic::app::Task;
 use cosmic::prelude::*;
 
@@ -15,6 +15,100 @@ pub struct BluetoothModule {
     name: Option<String>,
     /// Lowest battery percentage across connected devices that report one.
     battery: Option<u8>,
+    /// Paired devices for the inline selection list, populated when expanded.
+    entries: Vec<ListEntry>,
+    /// Whether the drawer is open (so the device list is only scanned then).
+    want_entries: bool,
+}
+
+/// A snapshot fetched off the UI thread.
+#[derive(Default)]
+struct BtData {
+    on: bool,
+    available: bool,
+    connected: usize,
+    name: Option<String>,
+    battery: Option<u8>,
+    entries: Vec<ListEntry>,
+}
+
+/// Gather Bluetooth state off the UI thread. `want_entries` adds the paired
+/// device list. The per-device battery query (`bluetoothctl info`) is the slow
+/// part this keeps off the UI thread.
+fn fetch(want_entries: bool) -> BtData {
+    let mut d = BtData::default();
+    if let Some(o) = super::out("bluetoothctl show") {
+        d.available = !o.is_empty();
+        d.on = o.lines().any(|l| l.trim() == "Powered: yes");
+    }
+    let conn = devices("bluetoothctl devices Connected");
+    d.connected = conn.len();
+    d.name = (conn.len() == 1)
+        .then(|| conn[0].1.clone())
+        .filter(|n| !n.is_empty());
+    // Lowest battery across connected devices that report one (org.bluez.Battery1,
+    // surfaced by `bluetoothctl info` as "Battery Percentage: 0xNN (NN)").
+    let mut lowest: Option<u8> = None;
+    for (mac, _) in &conn {
+        if let Some(info) = super::out(&format!("bluetoothctl info {mac}")) {
+            for line in info.lines() {
+                if let Some(pct) = line
+                    .trim()
+                    .strip_prefix("Battery Percentage:")
+                    .and_then(|v| v.split_once('('))
+                    .and_then(|(_, r)| r.split_once(')'))
+                    .and_then(|(n, _)| n.trim().parse::<u8>().ok())
+                {
+                    lowest = Some(lowest.map_or(pct, |c| c.min(pct)));
+                }
+            }
+        }
+    }
+    d.battery = lowest;
+    if want_entries {
+        d.entries = scan_devices();
+    }
+    d
+}
+
+/// Parse a `bluetoothctl devices ...` listing into (mac, name) pairs.
+fn devices(cmd: &str) -> Vec<(String, String)> {
+    super::out(cmd)
+        .map(|o| {
+            o.lines()
+                .filter_map(|l| {
+                    let rest = l.strip_prefix("Device ")?;
+                    let mut it = rest.splitn(2, ' ');
+                    let mac = it.next()?.to_string();
+                    Some((mac, it.next().unwrap_or("").trim().to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn connected_macs() -> Vec<String> {
+    devices("bluetoothctl devices Connected")
+        .into_iter()
+        .map(|(m, _)| m)
+        .collect()
+}
+
+/// Paired devices, marking which are currently connected.
+fn scan_devices() -> Vec<ListEntry> {
+    let connected = connected_macs();
+    devices("bluetoothctl devices Paired")
+        .into_iter()
+        .map(|(mac, name)| {
+            let active = connected.contains(&mac);
+            ListEntry {
+                label: if name.is_empty() { mac.clone() } else { name },
+                detail: if active { "Connected".into() } else { String::new() },
+                active,
+                key: mac,
+            }
+        })
+        .collect()
 }
 
 impl BluetoothModule {
@@ -32,50 +126,22 @@ impl BluetoothModule {
             connected: 0,
             name: None,
             battery: None,
+            entries: Vec::new(),
+            want_entries: false,
         };
-        m.read();
+        m.set(fetch(false));
         m
     }
 
-    fn read(&mut self) {
-        if let Some(o) = super::out("bluetoothctl show") {
-            self.available = !o.is_empty();
-            self.on = o.lines().any(|l| l.trim() == "Powered: yes");
+    fn set(&mut self, d: BtData) {
+        self.on = d.on;
+        self.available = d.available;
+        self.connected = d.connected;
+        self.name = d.name;
+        self.battery = d.battery;
+        if self.want_entries {
+            self.entries = d.entries;
         }
-        // Each `devices Connected` line is "Device <MAC> <Name>".
-        let (mut macs, mut names) = (Vec::new(), Vec::new());
-        if let Some(o) = super::out("bluetoothctl devices Connected") {
-            for l in o.lines() {
-                if let Some(rest) = l.strip_prefix("Device ") {
-                    let mut it = rest.splitn(2, ' ');
-                    if let Some(mac) = it.next() {
-                        macs.push(mac.to_string());
-                        names.push(it.next().unwrap_or("").trim().to_string());
-                    }
-                }
-            }
-        }
-        self.connected = macs.len();
-        self.name = (names.len() == 1).then(|| names.remove(0)).filter(|n| !n.is_empty());
-        // Lowest battery across devices that report one (org.bluez.Battery1,
-        // surfaced by `bluetoothctl info` as "Battery Percentage: 0xNN (NN)").
-        let mut lowest: Option<u8> = None;
-        for mac in &macs {
-            if let Some(info) = super::out(&format!("bluetoothctl info {mac}")) {
-                for line in info.lines() {
-                    if let Some(pct) = line
-                        .trim()
-                        .strip_prefix("Battery Percentage:")
-                        .and_then(|v| v.split_once('('))
-                        .and_then(|(_, r)| r.split_once(')'))
-                        .and_then(|(n, _)| n.trim().parse::<u8>().ok())
-                    {
-                        lowest = Some(lowest.map_or(pct, |c| c.min(pct)));
-                    }
-                }
-            }
-        }
-        self.battery = lowest;
     }
 }
 
@@ -109,7 +175,7 @@ impl Module for BluetoothModule {
             self.desc.icon.as_str(),
             "Bluetooth",
             &status,
-            true,
+            super::Chevron::Expand,
         )
     }
 
@@ -127,13 +193,52 @@ impl Module for BluetoothModule {
                 }
             }
             "settings" => super::run("cosmic-settings bluetooth"),
+            // Drawer open/close: flag whether the device list is fetched.
+            "expand" => {
+                // Keep the cached list while the drawer animates closed (the flag
+                // stops it refreshing) so an empty state doesn't flash mid-close.
+                if let ControlValue::Bool(b) = value {
+                    self.want_entries = b;
+                }
+            }
+            "select" => {
+                if let ControlValue::Text(mac) = value {
+                    let action = if connected_macs().contains(&mac) {
+                        "disconnect"
+                    } else {
+                        "connect"
+                    };
+                    super::run(&format!("bluetoothctl {action} {mac}"));
+                }
+            }
             _ => {}
         }
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn expandable(&self) -> bool {
+        true
+    }
+
+    fn entries(&self) -> Vec<ListEntry> {
+        self.entries.clone()
+    }
+
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
+        let want_entries = self.want_entries;
+        Some(Box::new(move || crate::module::Payload::new(fetch(want_entries))))
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<BtData>() {
+            self.set(BtData {
+                on: d.on,
+                available: d.available,
+                connected: d.connected,
+                name: d.name.clone(),
+                battery: d.battery,
+                entries: d.entries.clone(),
+            });
+        }
     }
 }

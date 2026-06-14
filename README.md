@@ -110,9 +110,9 @@ CPU/GPU/RAM gauges become history graphs at 3col and up, and the disk gauge
 becomes a capacity bar. A few tiles (such as the combined system monitor) still
 reuse one layout across sizes, so per-module polish across the range continues.
 
-The media player comes in two styles, each a separate palette entry: "Media"
-follows the COSMIC design system (a plain card) and is the default, while
-"Media (album art)" uses the custom blurred album-art backdrop.
+The media player has two styles, chosen per tile from the editor's config
+sidebar (the tile's gear): "COSMIC" follows the design system (a plain card) and
+is the default, while "Album art" uses the blurred album-art backdrop.
 
 ## Built with
 

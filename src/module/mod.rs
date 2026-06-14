@@ -15,6 +15,26 @@ use std::time::{Duration, Instant};
 /// Unique id for a *placed* tile (one module type can be placed many times).
 pub type InstanceId = u32;
 
+/// An opaque, thread-safe payload carrying a module's freshly-fetched data back
+/// from a background refresh to the UI thread (delivered via
+/// `Message::StateLoaded`, applied by `Module::apply`). Each module boxes its
+/// own data type and downcasts it on the way in. The manual `Debug`/`Clone`
+/// keep `Message`'s derives working (`dyn Any` is neither).
+#[derive(Clone)]
+pub struct Payload(pub std::sync::Arc<dyn std::any::Any + Send + Sync>);
+
+impl Payload {
+    pub fn new<T: std::any::Any + Send + Sync>(data: T) -> Self {
+        Payload(std::sync::Arc::new(data))
+    }
+}
+
+impl std::fmt::Debug for Payload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Payload(..)")
+    }
+}
+
 /// How long a `ValueAnim` takes to ease to a new target. Snappy but visible.
 const ANIM_DUR: Duration = Duration::from_millis(260);
 
@@ -123,6 +143,17 @@ pub enum ControlValue {
     Text(String),
 }
 
+/// One selectable target in a module's expandable list (a Wi-Fi network, a
+/// Bluetooth device, a VPN profile). `key` is passed back to `on_control` as the
+/// "select" value; `active` marks the currently-connected one.
+#[derive(Debug, Clone)]
+pub struct ListEntry {
+    pub key: String,
+    pub label: String,
+    pub detail: String,
+    pub active: bool,
+}
+
 /// Identity + presentation of a module type.
 #[derive(Debug, Clone)]
 pub struct ModuleDescriptor {
@@ -170,10 +201,38 @@ pub trait Module {
         Subscription::none()
     }
 
-    /// Poll current state (e.g. on open). Default: nothing.
-    fn refresh(&mut self) -> Task<Message> {
-        Task::none()
+    /// The module's blocking I/O as a `Send` closure producing its data payload,
+    /// or `None` if it has no off-thread work (stateless, or updates cheaply in
+    /// `refresh`). The hub batches these from every module into ONE background
+    /// task per poll, applying all results in a single `StateBatch` so the popup
+    /// repaints once per poll instead of once per module.
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> Payload + Send>> {
+        None
     }
+
+    /// Poll current state on demand (drawer open). The default dispatches this
+    /// module's `fetch_job` off the UI thread and delivers it via `StateLoaded`.
+    /// A module with cheap synchronous I/O (e.g. sysmon reading /proc) overrides
+    /// this to update itself in place and return `Task::none()`.
+    fn refresh(&mut self, id: InstanceId) -> Task<Message> {
+        match self.fetch_job() {
+            Some(job) => builtin::single_fetch(id, job),
+            None => Task::none(),
+        }
+    }
+
+    /// A user-initiated refresh (the drawer's refresh button). Defaults to the
+    /// normal `refresh`; modules can override to do a deeper scan — e.g. Wi-Fi
+    /// forces a real rescan instead of re-reading the cached network list.
+    fn refresh_manual(&mut self, id: InstanceId) -> Task<Message> {
+        self.refresh(id)
+    }
+
+    /// Apply data produced by a background `refresh`. The module downcasts the
+    /// payload to its own data type and updates its cached state. Default: no-op
+    /// (synchronous modules don't use this path). Named `apply_data`, not
+    /// `apply`, to dodge the `Apply` blanket method `cosmic::prelude` adds.
+    fn apply_data(&mut self, _data: &dyn std::any::Any) {}
 
     /// Per-instance settings to persist (e.g. {"mount": "/home"}). Empty means
     /// the module is stateless and the same wherever it's placed.
@@ -192,6 +251,33 @@ pub trait Module {
         0
     }
 
+    /// Label shown next to the option picker in the editor (e.g. "Mount").
+    fn option_label(&self) -> &'static str {
+        "Option"
+    }
+
     /// Apply a picker choice (an index into `option_choices`).
     fn set_option(&mut self, _index: usize) {}
+
+    /// Whether this module's tile chevron opens an inline selection list (Wi-Fi
+    /// networks, Bluetooth devices, VPN profiles) rather than external settings.
+    fn expandable(&self) -> bool {
+        false
+    }
+
+    /// The current selectable targets for the expanded list. Populated when the
+    /// hub sends the `expand` control (so the scan only runs on demand); a
+    /// `select` control with an entry's `key` acts on it.
+    fn entries(&self) -> Vec<ListEntry> {
+        Vec::new()
+    }
+
+    /// While the module awaits text input (e.g. a Wi-Fi password for a new
+    /// secured network), the (entry key, current value) — the key identifies
+    /// which list entry to expand the field under. When `Some`, that row shows a
+    /// secure field; edits arrive as the "input" control, confirm as "submit",
+    /// dismiss as "cancel".
+    fn pending_input(&self) -> Option<(String, String)> {
+        None
+    }
 }

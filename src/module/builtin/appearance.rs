@@ -56,7 +56,7 @@ impl Module for AppearanceModule {
             "weather-clear-symbolic"
         };
         let status = if self.dark { "On" } else { "Off" };
-        super::toggle_tile(id, width, self.dark, edit, icon, "Dark Mode", status, true)
+        super::toggle_tile(id, width, self.dark, edit, icon, "Dark Mode", status, super::Chevron::Settings)
     }
 
     fn on_control(&mut self, control: &str, value: ControlValue) -> Task<Message> {
@@ -78,7 +78,7 @@ impl Module for AppearanceModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
+    fn refresh(&mut self, _id: InstanceId) -> Task<Message> {
         self.read();
         Task::none()
     }

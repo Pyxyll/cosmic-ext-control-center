@@ -33,6 +33,13 @@ pub fn fg() -> Color {
     cosmic::theme::active().cosmic().background.on.into()
 }
 
+/// The live COSMIC system accent colour. The control center tints its active
+/// tiles, sliders, and highlights with this so it follows the user's accent
+/// setting (not just light/dark). Read per build, so it tracks changes.
+pub fn accent() -> Color {
+    cosmic::theme::active().cosmic().accent_color().into()
+}
+
 /// A divider painted in the window's base background colour, so a strip of it
 /// inside a card reads as a gap "cut" through to the desktop behind.
 pub fn divider_gap() -> theme::Container<'static> {

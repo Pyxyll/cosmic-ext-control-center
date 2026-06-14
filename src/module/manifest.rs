@@ -133,6 +133,10 @@ impl Manifest {
 // --- command execution ---
 
 fn run_get(cmd: &str) -> Option<String> {
+    // No plugin commands in the editor preview (data-free, like the built-ins).
+    if super::builtin::preview() {
+        return None;
+    }
     Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -140,6 +144,38 @@ fn run_get(cmd: &str) -> Option<String> {
         .ok()
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+}
+
+/// Run the `get` of each control (only those that poll, when `polling_only`)
+/// off the UI thread, returning the parsed values by control id.
+fn fetch(controls: Vec<Control>, polling_only: bool) -> HashMap<String, ControlValue> {
+    let mut values = HashMap::new();
+    for c in &controls {
+        if polling_only && !c.polls() {
+            continue;
+        }
+        match c {
+            Control::Slider { id, get: Some(Action::Cmd(cmd)), .. } => {
+                if let Some(o) = run_get(cmd) {
+                    if let Ok(v) = o.split_whitespace().next().unwrap_or(&o).parse::<f64>() {
+                        values.insert(id.clone(), ControlValue::Float(v));
+                    }
+                }
+            }
+            Control::Toggle { id, get: Some(Action::Cmd(cmd)), .. } => {
+                if let Some(o) = run_get(cmd) {
+                    values.insert(id.clone(), ControlValue::Bool(parse_bool(&o)));
+                }
+            }
+            Control::Label { id, get: Action::Cmd(cmd), .. } => {
+                if let Some(o) = run_get(cmd) {
+                    values.insert(id.clone(), ControlValue::Text(o));
+                }
+            }
+            _ => {}
+        }
+    }
+    values
 }
 
 fn run_set(template: &str, value: &str) {
@@ -175,40 +211,9 @@ impl ManifestModule {
             controls: m.controls.clone(),
             values: HashMap::new(),
         };
-        // Seed initial state from every `get`.
-        let controls = me.controls.clone();
-        for c in &controls {
-            me.read_control(c);
-        }
+        // Seed initial state from every `get` (one-time, synchronous).
+        me.values = fetch(me.controls.clone(), false);
         me
-    }
-
-    /// Run a control's `get` and store the parsed value.
-    fn read_control(&mut self, c: &Control) {
-        match c {
-            Control::Slider { id, get, .. } => {
-                if let Some(Action::Cmd(cmd)) = get {
-                    if let Some(o) = run_get(cmd) {
-                        if let Ok(v) = o.split_whitespace().next().unwrap_or(&o).parse::<f64>() {
-                            self.values.insert(id.clone(), ControlValue::Float(v));
-                        }
-                    }
-                }
-            }
-            Control::Toggle { id, get, .. } => {
-                if let Some(Action::Cmd(cmd)) = get {
-                    if let Some(o) = run_get(cmd) {
-                        self.values.insert(id.clone(), ControlValue::Bool(parse_bool(&o)));
-                    }
-                }
-            }
-            Control::Label { id, get: Action::Cmd(cmd), .. } => {
-                if let Some(o) = run_get(cmd) {
-                    self.values.insert(id.clone(), ControlValue::Text(o));
-                }
-            }
-            Control::Button { .. } => {}
-        }
     }
 
     fn float(&self, id: &str, default: f64) -> f64 {
@@ -320,13 +325,16 @@ impl Module for ManifestModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
         let controls = self.controls.clone();
-        for c in &controls {
-            if c.polls() {
-                self.read_control(c);
+        Some(Box::new(move || crate::module::Payload::new(fetch(controls, true))))
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(m) = data.downcast_ref::<HashMap<String, ControlValue>>() {
+            for (k, v) in m {
+                self.values.insert(k.clone(), v.clone());
             }
         }
-        Task::none()
     }
 }

@@ -40,7 +40,6 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
         VolumeModule::new().descriptor().clone(),
         MicrophoneModule::new().descriptor().clone(),
         MediaModule::new().descriptor().clone(),
-        MediaModule::new_framed().descriptor().clone(),
         PowerProfileModule::new().descriptor().clone(),
         WifiModule::new().descriptor().clone(),
         VpnModule::new().descriptor().clone(),
@@ -56,14 +55,41 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
     ]
 }
 
+/// Whether more than one of this module type may be placed. Most are
+/// single-instance (one Wi-Fi toggle is plenty); disk gauges (per mount) and
+/// dividers (per section) are the exceptions. Unknown ids (plugins) are single.
+pub fn allows_multiple(id: &str) -> bool {
+    matches!(id, "builtin.disk" | "builtin.divider")
+}
+
+/// Palette category for grouping the "Add a module" list. Unknown ids (plugins)
+/// fall under "Plugins". `CATEGORIES` is the display order.
+pub const CATEGORIES: [&str; 6] =
+    ["Audio", "Network", "Monitors", "System", "Layout", "Plugins"];
+
+pub fn category(id: &str) -> &'static str {
+    match id {
+        "builtin.volume" | "builtin.microphone" | "builtin.media" | "builtin.media_art" => "Audio",
+        "builtin.wifi" | "builtin.vpn" | "builtin.bluetooth" | "builtin.airplane" => "Network",
+        "builtin.cpu" | "builtin.gpu" | "builtin.ram" | "builtin.disk" | "builtin.sysmon" => {
+            "Monitors"
+        }
+        "builtin.power_profile" | "builtin.appearance" => "System",
+        "builtin.divider" => "Layout",
+        _ => "Plugins",
+    }
+}
+
 /// Instantiate a built-in by its module id, seeding any saved per-instance
 /// params (e.g. a disk gauge's mount). Returns None for unknown ids.
 pub fn make(id: &str, params: &std::collections::BTreeMap<String, String>) -> Option<Box<dyn Module>> {
     match id {
         "builtin.volume" => Some(Box::new(VolumeModule::new())),
         "builtin.microphone" => Some(Box::new(MicrophoneModule::new())),
-        "builtin.media" => Some(Box::new(MediaModule::new())),
-        "builtin.media_art" => Some(Box::new(MediaModule::new_framed())),
+        "builtin.media" => Some(Box::new(MediaModule::from_params(params))),
+        // Legacy id from when the album-art look was a separate module; maps to
+        // a media tile with style=framed and re-saves as builtin.media.
+        "builtin.media_art" => Some(Box::new(MediaModule::framed_style())),
         "builtin.power_profile" => Some(Box::new(PowerProfileModule::new())),
         "builtin.wifi" => Some(Box::new(WifiModule::new())),
         "builtin.vpn" => Some(Box::new(VpnModule::new())),
@@ -88,7 +114,7 @@ pub(crate) fn tile<'a>(
     active: bool,
     content: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1; // cerise
+    let accent = theme::accent(); // cerise
     widget::container(content)
         .padding(14)
         .width(Length::Fixed(width))
@@ -96,10 +122,21 @@ pub(crate) fn tile<'a>(
         .into()
 }
 
+/// What the split pill's right-hand chevron does.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Chevron {
+    /// No chevron (toggle only).
+    None,
+    /// Opens the module's external settings (sends the "settings" control).
+    Settings,
+    /// Expands an inline selection list (Wi-Fi networks, devices, profiles).
+    Expand,
+}
+
 /// GNOME-style quick-toggle pill: the whole left area toggles the module; an
-/// optional smaller right segment opens its settings. The tile is tinted with
-/// the accent when on. Controls go inert in edit mode (so the reorder drag
-/// isn't swallowed). Modules handle the "on" / "settings" controls.
+/// optional smaller right segment opens its settings or an inline list. The tile
+/// is tinted with the accent when on. Controls go inert in edit mode (so the
+/// reorder drag isn't swallowed). Modules handle the "on" / "settings" controls.
 pub(crate) fn toggle_tile<'a>(
     id: InstanceId,
     width: f32,
@@ -108,9 +145,9 @@ pub(crate) fn toggle_tile<'a>(
     icon: &str,
     label: &str,
     status: &str,
-    has_settings: bool,
+    chevron: Chevron,
 ) -> Element<'a, Message> {
-    let accent = theme::ACCENTS[0].1;
+    let accent = theme::accent();
     // A definite tile height. The full-height divider uses `Length::Fill`, and
     // an *unbounded* Fill collapses the tile's measured height inside flex_row
     // (which made the next row draw on top of it). A fixed card height bounds
@@ -162,20 +199,31 @@ pub(crate) fn toggle_tile<'a>(
         .height(Length::Fill)
         .align_y(Alignment::Center)
         .push(left);
-    if has_settings {
+    if chevron != Chevron::None {
         // A full-height divider in the window background colour separates the
-        // toggle area from the settings chevron — reads as a gap between the two
-        // halves of the split pill.
+        // toggle area from the chevron — reads as a gap between the two halves of
+        // the split pill.
         row = row.push(
             widget::container(widget::Space::new())
                 .width(Length::Fixed(2.0))
                 .height(Length::Fill)
                 .class(theme::divider_gap()),
         );
+        // Expand uses a down chevron (reveals the list); Settings keeps the
+        // forward chevron (leaves to an external page).
+        let glyph = if chevron == Chevron::Expand {
+            "pan-down-symbolic"
+        } else {
+            "go-next-symbolic"
+        };
         let mut chev =
-            widget::button::icon(widget::icon::from_name("go-next-symbolic").size(16)).padding(14);
+            widget::button::icon(widget::icon::from_name(glyph).size(16)).padding(14);
         if !edit {
-            chev = chev.on_press(Message::Control(id, "settings".into(), ControlValue::Trigger));
+            let msg = match chevron {
+                Chevron::Expand => Message::Expand(id),
+                _ => Message::Control(id, "settings".into(), ControlValue::Trigger),
+            };
+            chev = chev.on_press(msg);
         }
         row = row.push(chev);
     }
@@ -321,4 +369,39 @@ pub(crate) fn run(cmd: &str) {
         return;
     }
     let _ = Command::new("sh").arg("-c").arg(cmd).spawn();
+}
+
+use crate::module::Payload;
+
+/// A boxed, `Send` closure producing a module's data payload off the UI thread.
+pub(crate) type FetchJob = Box<dyn FnOnce() -> Payload + Send>;
+
+/// Run one module's `job` on tokio's blocking pool and deliver it via
+/// `Message::StateLoaded` (on-demand refresh: drawer open / manual rescan).
+pub(crate) fn single_fetch(id: InstanceId, job: FetchJob) -> cosmic::app::Task<Message> {
+    cosmic::task::future(async move {
+        let payload = tokio::task::spawn_blocking(job)
+            .await
+            .unwrap_or_else(|_| Payload::new(()));
+        cosmic::action::app(Message::StateLoaded(id, payload))
+    })
+}
+
+/// Run every module's `job` on the blocking pool in parallel, then deliver all
+/// results in ONE `Message::StateBatch` — so a poll repaints the popup once,
+/// not once per module (the source of the per-poll input hitching).
+pub(crate) fn poll_batch(jobs: Vec<(InstanceId, FetchJob)>) -> cosmic::app::Task<Message> {
+    cosmic::task::future(async move {
+        let handles: Vec<_> = jobs
+            .into_iter()
+            .map(|(id, job)| tokio::task::spawn_blocking(move || (id, job())))
+            .collect();
+        let mut results = Vec::with_capacity(handles.len());
+        for h in handles {
+            if let Ok(r) = h.await {
+                results.push(r);
+            }
+        }
+        cosmic::action::app(Message::StateBatch(results))
+    })
 }

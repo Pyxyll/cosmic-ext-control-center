@@ -15,12 +15,27 @@ use cosmic::widget;
 use zbus::blocking::Connection;
 
 /// The two media tile looks. `Cosmic` follows the design system (a plain card);
-/// `Framed` is the custom blurred album-art backdrop. Picked at add time — each
-/// is its own palette entry / module id.
+/// `Framed` is the custom blurred album-art backdrop. Chosen per-instance in the
+/// config sidebar (the "Style" option), persisted as the "style" param.
 #[derive(Clone, Copy, PartialEq)]
 enum Style {
     Cosmic,
     Framed,
+}
+
+impl Style {
+    fn from_param(s: Option<&str>) -> Self {
+        match s {
+            Some("framed") => Style::Framed,
+            _ => Style::Cosmic,
+        }
+    }
+    fn param(self) -> &'static str {
+        match self {
+            Style::Cosmic => "cosmic",
+            Style::Framed => "framed",
+        }
+    }
 }
 
 pub struct MediaModule {
@@ -98,18 +113,51 @@ fn apply_rounded_mask(img: &mut image::RgbaImage, radius: f32) {
     }
 }
 
+/// A snapshot fetched off the UI thread: player state plus, when the track's
+/// artwork changed, the decoded (sharp, blurred) handles. The D-Bus query and
+/// the image decode/blur are the slow parts this keeps off the UI thread.
+#[derive(Default, Clone)]
+struct MediaData {
+    state: MprisState,
+    art: Option<(String, Handle, Handle)>,
+}
+
+fn fetch(conn: Option<Connection>, cur_art_path: Option<String>) -> MediaData {
+    let mut d = MediaData::default();
+    if let Some(c) = &conn {
+        if let Ok(s) = mpris::fetch_state(c) {
+            d.state = s;
+        }
+    }
+    if let Some(p) = d.state.art_path.clone() {
+        if cur_art_path.as_deref() != Some(p.as_str()) {
+            if let Some((sharp, blurred)) = load_art(&p) {
+                d.art = Some((p, sharp, blurred));
+            }
+        }
+    }
+    d
+}
+
 impl MediaModule {
-    /// COSMIC-styled media tile (plain card) — the default.
+    /// Default media tile (COSMIC style). Style is a per-instance option chosen
+    /// in the config sidebar, not a separate module.
     pub fn new() -> Self {
-        Self::with_style(Style::Cosmic, "builtin.media", "Media")
+        Self::with_style(Style::Cosmic)
     }
 
-    /// The custom blurred album-art backdrop look.
-    pub fn new_framed() -> Self {
-        Self::with_style(Style::Framed, "builtin.media_art", "Media (album art)")
+    /// Build from saved per-instance params (the "style" key).
+    pub fn from_params(params: &std::collections::BTreeMap<String, String>) -> Self {
+        Self::with_style(Style::from_param(params.get("style").map(String::as_str)))
     }
 
-    fn with_style(style: Style, id: &str, name: &str) -> Self {
+    /// Legacy `builtin.media_art` instances → the album-art style; they persist
+    /// back as `builtin.media` with style=framed on the next save.
+    pub fn framed_style() -> Self {
+        Self::with_style(Style::Framed)
+    }
+
+    fn with_style(style: Style) -> Self {
         // No D-Bus connect / art decode in the editor preview.
         let conn = if super::preview() {
             None
@@ -118,8 +166,8 @@ impl MediaModule {
         };
         let mut m = Self {
             desc: ModuleDescriptor {
-                id: id.into(),
-                name: name.into(),
+                id: "builtin.media".into(),
+                name: "Media".into(),
                 icon: "applications-multimedia-symbolic".into(),
                 size: TileSize::Large,
                 resizable: true,
@@ -135,20 +183,17 @@ impl MediaModule {
     }
 
     fn read(&mut self) {
-        if let Some(c) = &self.conn {
-            if let Ok(s) = mpris::fetch_state(c) {
-                self.state = s;
-            }
-        }
-        // Reload art only when the path changes; keep the last art if a player
-        // briefly drops artUrl during a track transition.
-        if let Some(p) = self.state.art_path.clone() {
-            let unchanged = self.art.as_ref().map(|(c, ..)| c == &p).unwrap_or(false);
-            if !unchanged {
-                if let Some((sharp, blurred)) = load_art(&p) {
-                    self.art = Some((p, sharp, blurred));
-                }
-            }
+        let cur = self.art.as_ref().map(|(p, ..)| p.clone());
+        let d = fetch(self.conn.clone(), cur);
+        self.set(d);
+    }
+
+    fn set(&mut self, d: MediaData) {
+        self.state = d.state;
+        // Only replace art when the fetch loaded new artwork; otherwise keep the
+        // last (a player can briefly drop artUrl mid-transition).
+        if let Some(art) = d.art {
+            self.art = Some(art);
         }
     }
 
@@ -251,7 +296,7 @@ impl MediaModule {
             .width(Length::Fixed(width))
             .height(Length::Fixed(height))
             .clip(true)
-            .class(theme::card(self.state.playing, theme::ACCENTS[0].1))
+            .class(theme::card(self.state.playing, theme::accent()))
             .into()
     }
 }
@@ -371,9 +416,37 @@ impl Module for MediaModule {
         Task::none()
     }
 
-    fn refresh(&mut self) -> Task<Message> {
-        self.read();
-        Task::none()
+    fn fetch_job(&self) -> Option<Box<dyn FnOnce() -> crate::module::Payload + Send>> {
+        let conn = self.conn.clone();
+        let cur = self.art.as_ref().map(|(p, ..)| p.clone());
+        Some(Box::new(move || crate::module::Payload::new(fetch(conn, cur))))
+    }
+
+    fn apply_data(&mut self, data: &dyn std::any::Any) {
+        if let Some(d) = data.downcast_ref::<MediaData>() {
+            self.set(d.clone());
+        }
+    }
+
+    // --- per-instance style option (config sidebar) ---
+
+    fn option_label(&self) -> &'static str {
+        "Style"
+    }
+    fn option_choices(&self) -> Vec<String> {
+        vec!["COSMIC".to_string(), "Album art".to_string()]
+    }
+    fn option_selected(&self) -> usize {
+        match self.style {
+            Style::Cosmic => 0,
+            Style::Framed => 1,
+        }
+    }
+    fn set_option(&mut self, index: usize) {
+        self.style = if index == 1 { Style::Framed } else { Style::Cosmic };
+    }
+    fn params(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([("style".to_string(), self.style.param().to_string())])
     }
 }
 
