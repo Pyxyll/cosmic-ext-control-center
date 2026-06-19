@@ -8,7 +8,7 @@ layout in a popup, where the tiles are live and interactive. If a tile you want
 isn't built in, you can add one with a small RON plugin file that runs shell
 commands, without writing Rust or recompiling.
 
-Status: early preview (0.1.1). It works and is usable day to day, but it still
+Status: early preview (0.1.3). It works and is usable day to day, but it still
 has rough edges. See [Known issues](#known-issues).
 
 <p align="center">
@@ -24,7 +24,7 @@ editor window where you add, remove, reorder, and resize tiles from the palette.
 | Binary | What it is |
 |---|---|
 | `cosmic-ext-control-center` | The editor window. Add, remove, reorder, and resize tiles. Saves the layout to `cosmic-config`. |
-| `cosmic-ext-control-center-applet` | The panel applet. A popup that shows your configured tiles, live and interactive. Its gear button opens the editor. |
+| `cosmic-ext-control-center-applet` | The panel applet. A popup that shows your configured tiles, live and interactive. Its gear button opens the editor. The panel button can optionally show a cluster of live status icons (Wi-Fi/VPN, audio, Bluetooth, power profile) instead of a single icon. |
 
 ## Modules
 
@@ -96,10 +96,12 @@ helper.
 
 ## Known issues
 
-The applet refreshes module state on a 2 second poll while the popup is open.
-Those queries are still synchronous, so a slow one (for example
-`bluetoothctl`) can briefly stutter the UI. Moving the refresh off the UI thread
-is planned.
+The inline Wi-Fi/Bluetooth/VPN selection drawer opens and closes instantly,
+without a slide animation. COSMIC renders applet popups in software (tiny_skia),
+so animating a reflow of the whole popup every frame is too expensive to stay
+smooth; the drawer is snappy without it. A non-reflowing transition is a
+possible future improvement. The app prefers the GPU (Vulkan) backend where one
+is available, which keeps the rest of the popup responsive.
 
 The plugin system is functional but experimental. For now it only supports
 `Cmd` actions and basic styling. D-Bus and HTTP actions, plus native-looking

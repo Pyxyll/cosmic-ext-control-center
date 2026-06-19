@@ -28,6 +28,17 @@ struct VpnData {
     entries: Vec<ListEntry>,
 }
 
+/// The VPN icon for an active/inactive state. Shared by the tile and the panel
+/// status cluster (the `network-vpn-*` names come from the Pop theme Cosmic
+/// inherits).
+pub fn state_icon(on: bool) -> &'static str {
+    if on {
+        "network-vpn-symbolic"
+    } else {
+        "network-vpn-disconnected-symbolic"
+    }
+}
+
 /// Gather VPN state off the UI thread. `want_entries` adds the profile list.
 fn fetch(want_entries: bool) -> VpnData {
     let active =
@@ -128,6 +139,10 @@ impl Module for VpnModule {
         &self.desc
     }
 
+    fn status_icon(&self) -> String {
+        state_icon(self.on).to_string()
+    }
+
     fn view(&self, id: InstanceId, edit: bool, width: f32) -> Element<'_, Message> {
         // Primary line = the connection name when connected (mirrors Wi-Fi's
         // SSID); falls back to "VPN".
@@ -142,7 +157,8 @@ impl Module for VpnModule {
         } else {
             "Off".to_string()
         };
-        super::toggle_tile(id, width, self.on, edit, self.desc.icon.as_str(), &label, &status, super::Chevron::Expand)
+        let icon = self.status_icon();
+        super::toggle_tile(id, width, self.on, edit, &icon, &label, &status, super::Chevron::Expand)
     }
 
     fn on_control(&mut self, control: &str, value: ControlValue) -> Task<Message> {

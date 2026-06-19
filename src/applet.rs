@@ -7,15 +7,19 @@
 //! always reflects what the editor last set up.
 
 use crate::app::{Hub, Message};
+use crate::config::AppletIcons;
+use crate::status::StatusSnapshot;
 use cosmic::app::{Core, Task};
 use cosmic::applet::token::subscription::{
     TokenRequest, TokenUpdate, activation_token_subscription,
 };
 use cosmic::cctk::sctk::reexports::calloop::channel::Sender;
 use cosmic::iced::window::Id;
-use cosmic::iced::{Limits, Subscription};
+use cosmic::iced::{Alignment, Limits, Subscription};
 use cosmic::prelude::*;
+use cosmic::surface::Action as SurfaceAction;
 use cosmic::surface::action::{app_popup, destroy_popup};
+use cosmic::widget;
 
 /// Popup width. `popup_container` hard-caps itself at 360px via its own autosize
 /// limits, so we override those (below) — this is the real width control. Wide
@@ -28,6 +32,9 @@ pub struct Applet {
     core: Core,
     popup: Option<Id>,
     hub: Hub,
+    /// Live system state for the panel status-icon cluster (issue #21), fed by
+    /// the D-Bus / pactl status sources. Only meaningful in `Status` icon mode.
+    status: StatusSnapshot,
     /// Channel to request a Wayland activation token (for launching the editor
     /// so it can raise its window). Set once the token subscription initializes.
     token_tx: Option<Sender<TokenRequest>>,
@@ -53,6 +60,7 @@ impl cosmic::Application for Applet {
                 core,
                 popup: None,
                 hub: Hub::new(false),
+                status: StatusSnapshot::default(),
                 token_tx: None,
             },
             Task::none(),
@@ -64,54 +72,74 @@ impl cosmic::Application for Applet {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        // Always listen for activation-token requests; add the hub's poll/anim
-        // timers only while the popup is open.
-        let token = activation_token_subscription(0).map(Message::Token);
-        if self.popup.is_some() {
-            Subscription::batch([self.hub.subscription(), token])
-        } else {
-            token
+        // Always listen for activation-token requests. Add the status sources
+        // whenever the cluster icon mode is on (they keep the panel icons live
+        // even with the popup closed), and the hub's poll/anim timers only while
+        // the popup is open.
+        let mut subs = vec![activation_token_subscription(0).map(Message::Token)];
+        if matches!(self.hub.applet_icons(), AppletIcons::Status) {
+            subs.push(crate::status::subscription(self.hub.cluster_icons()));
         }
+        if self.popup.is_some() {
+            subs.push(self.hub.subscription());
+        }
+        Subscription::batch(subs)
     }
 
     fn view(&self) -> Element<'_, Message> {
         let popup_id = self.popup;
-        self.core
-            .applet
-            .icon_button("emblem-system-symbolic")
-            .on_press_with_rectangle(move |_offset, _bounds| {
-                if let Some(id) = popup_id {
-                    Message::Surface(destroy_popup(id))
-                } else {
-                    Message::Surface(app_popup::<Applet>(
-                        |state: &mut Applet| {
-                            let new_id = Id::unique();
-                            state.popup = Some(new_id);
-                            // Reflect the latest layout the editor saved.
-                            state.hub.reload();
-                            let mut settings = state.core.applet.get_popup_settings(
-                                state.core.main_window_id().unwrap(),
-                                new_id,
-                                None,
-                                None,
-                                None,
-                            );
-                            // Wide enough for the full 4-column block (430px) +
-                            // the view's padding + the popup_container inset.
-                            // The view fills to width, so this sets the popup
-                            // width; match the window app's comfortable 560.
-                            settings.positioner.size_limits = Limits::NONE
-                                .min_width(POPUP_WIDTH)
-                                .max_width(POPUP_WIDTH + 40.0)
-                                .min_height(200.0)
-                                .max_height(900.0);
-                            settings
-                        },
-                        None,
-                    ))
+        // Either presentation toggles the same popup on click.
+        let press = move |_offset, _bounds| Message::Surface(popup_action(popup_id));
+
+        match self.hub.applet_icons() {
+            AppletIcons::Single => self
+                .core
+                .applet
+                .icon_button("emblem-system-symbolic")
+                .on_press_with_rectangle(press)
+                .into(),
+            // A cluster of live status icons laid along the panel's major axis,
+            // in one applet-styled button (so it's a single click target).
+            AppletIcons::Status => {
+                let app = &self.core.applet;
+                let icon_px = app.suggested_size(true).0;
+                let horizontal = app.is_horizontal();
+                let (pad_major, pad_minor) = app.suggested_padding(true);
+                let icon = |name: &'static str| widget::icon::from_name(name).size(icon_px);
+                let mut names = self.status.icons(self.hub.cluster_icons());
+                // Never render an empty (unclickable) button: if every indicator
+                // is hidden or inactive, fall back to the control-center gear.
+                if names.is_empty() {
+                    names.push("emblem-system-symbolic");
                 }
-            })
-            .into()
+                let content: Element<'_, Message> = if horizontal {
+                    let mut r = widget::Row::new().spacing(8).align_y(Alignment::Center);
+                    for n in names {
+                        r = r.push(icon(n));
+                    }
+                    r.into()
+                } else {
+                    let mut c = widget::Column::new().spacing(8).align_x(Alignment::Center);
+                    for n in names {
+                        c = c.push(icon(n));
+                    }
+                    c.into()
+                };
+                let pad = if horizontal {
+                    [pad_minor as f32, pad_major as f32]
+                } else {
+                    [pad_major as f32, pad_minor as f32]
+                };
+                let button = widget::button::custom(content)
+                    .class(cosmic::theme::Button::AppletIcon)
+                    .padding(pad)
+                    .on_press_with_rectangle(press);
+                // Unlike `icon_button` (fixed single-icon size), the cluster is
+                // wider than the default panel slot, so wrap it in an autosize
+                // window to request a surface that fits the whole row.
+                self.core.applet.autosize_window(button).into()
+            }
+        }
     }
 
     fn view_window(&self, _id: Id) -> Element<'_, Message> {
@@ -172,6 +200,10 @@ impl cosmic::Application for Applet {
                 }
                 Task::none()
             }
+            Message::Status(update) => {
+                self.status.apply_update(update);
+                Task::none()
+            }
             other => self.hub.update(other),
         }
     }
@@ -179,4 +211,35 @@ impl cosmic::Application for Applet {
     fn style(&self) -> Option<cosmic::iced::theme::Style> {
         Some(cosmic::applet::style())
     }
+}
+
+/// Toggle the popup: destroy it if open, else open it (reloading the layout so
+/// it reflects the editor's latest save). Shared by both panel presentations.
+fn popup_action(popup_id: Option<Id>) -> SurfaceAction {
+    if let Some(id) = popup_id {
+        return destroy_popup(id);
+    }
+    app_popup::<Applet>(
+        |state: &mut Applet| {
+            let new_id = Id::unique();
+            state.popup = Some(new_id);
+            state.hub.reload();
+            let mut settings = state.core.applet.get_popup_settings(
+                state.core.main_window_id().unwrap(),
+                new_id,
+                None,
+                None,
+                None,
+            );
+            // Wide enough for the full 4-column block (430px) + the view's
+            // padding + the popup_container inset.
+            settings.positioner.size_limits = Limits::NONE
+                .min_width(POPUP_WIDTH)
+                .max_width(POPUP_WIDTH + 40.0)
+                .min_height(200.0)
+                .max_height(900.0);
+            settings
+        },
+        None,
+    )
 }

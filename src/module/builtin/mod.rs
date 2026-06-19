@@ -4,16 +4,16 @@
 
 mod airplane;
 mod appearance;
-mod bluetooth;
+pub(crate) mod bluetooth;
 mod divider;
 mod media;
 mod microphone;
 mod mpris;
-mod power_profile;
+pub(crate) mod power_profile;
 mod sysmon;
-mod volume;
-mod vpn;
-mod wifi;
+pub(crate) mod volume;
+pub(crate) mod vpn;
+pub(crate) mod wifi;
 
 use crate::app::Message;
 use crate::module::{ControlValue, InstanceId, Module, ModuleDescriptor, cols_for_width};

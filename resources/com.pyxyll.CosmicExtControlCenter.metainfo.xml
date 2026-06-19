@@ -71,6 +71,27 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.3" date="2026-06-19">
+      <description>
+        <p>Status icons and performance:</p>
+        <ul>
+          <li>Tile icons now reflect live state: Wi-Fi signal strength,
+          Bluetooth and VPN connection.</li>
+          <li>The volume tile icon tracks the level (muted / low / medium /
+          high), not just mute.</li>
+          <li>Optional panel status cluster: the applet button can show a row of
+          live status icons (Wi-Fi/VPN, audio, Bluetooth, power profile) instead
+          of a single icon, configured from a new Settings surface in the editor
+          with a per-indicator show/hide. The cluster is event-driven over D-Bus,
+          with no idle polling.</li>
+          <li>Fixed the battery readout showing 0% on laptops with wireless
+          peripherals (it now picks the system battery, not a peripheral).</li>
+          <li>Prefers the GPU (Vulkan) backend when available instead of CPU
+          software rendering, and the network list rows are lighter to draw.</li>
+        </ul>
+      </description>
+      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.3</url>
+    </release>
     <release version="0.1.2" date="2026-06-15">
       <description>
         <p>Inline Wi-Fi/Bluetooth/VPN selection from the tiles (connect to

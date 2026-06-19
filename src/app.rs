@@ -59,6 +59,8 @@ pub struct Hub {
     expand_loading: bool,
     /// (Editor) the tile whose option picker (gear) is revealed, if any.
     config_open: Option<InstanceId>,
+    /// (Editor) whether the app-wide Settings panel is open in the right sidebar.
+    settings_open: bool,
     /// Latest battery reading (percent, charging?), refreshed on poll. `None`
     /// on desktops with no battery — the readout is simply hidden.
     battery: Option<(u8, bool)>,
@@ -83,6 +85,12 @@ pub enum Message {
     SetOption(InstanceId, usize),
     /// (Editor) toggle the option picker (gear) for a tile.
     ToggleConfig(InstanceId),
+    /// (Editor) toggle the app-wide Settings panel.
+    ToggleSettings,
+    /// (Editor) pick the panel applet's icon mode (index into the choices).
+    SetAppletIcons(usize),
+    /// (Editor) toggle one indicator's visibility in the status cluster.
+    ToggleClusterIcon(crate::config::ClusterIcon),
     /// Toggle a tile's inline selection list (Wi-Fi networks, devices, VPN
     /// profiles). Expanding triggers a one-off scan of that module.
     Expand(InstanceId),
@@ -109,6 +117,9 @@ pub enum Message {
     PowerCancel,
     /// Launch the companion config app (the applet's gear, when editing is off).
     OpenConfig,
+    /// (applet) A status source (D-Bus / pactl) reported new system state for
+    /// the panel status-icon cluster. Ignored by the editor.
+    Status(crate::status::Update),
     /// (applet) Layer-shell surface plumbing for the panel popup.
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
@@ -454,33 +465,14 @@ fn entry_row<'a>(id: InstanceId, e: &ListEntry) -> Element<'a, Message> {
     if e.active {
         row = row.push(widget::icon::from_name("object-select-symbolic").size(18));
     }
-    let active = e.active;
-    let style = move |bg: f32| {
-        move |_focused: bool, t: &cosmic::Theme| {
-            let fg: cosmic::iced::Color = t.cosmic().background.on.into();
-            let mut s = cosmic::widget::button::Style::new();
-            // The connected entry sits on a steady accent tint; the rest react to
-            // hover.
-            let base = if active {
-                theme::alpha(theme::accent(), 0.18)
-            } else {
-                theme::alpha(fg, bg)
-            };
-            s.background = Some(cosmic::iced::Background::Color(base));
-            s.border_radius = 10.0.into();
-            s.icon_color = Some(fg);
-            s.text_color = Some(fg);
-            s
-        }
-    };
-    widget::button::custom(widget::container(row).padding([8, 12]))
+    // `MenuItem` is the built-in tappable-row style (hover highlight, rounded).
+    // The previous `Button::Custom` allocated four boxed style closures per row
+    // every render — ~60-80 allocations/frame across a full network list. The
+    // connected network is marked by the check icon above instead of a tint.
+    widget::button::custom(row)
+        .class(cosmic::theme::Button::MenuItem)
+        .padding([8, 12])
         .width(Length::Fill)
-        .class(cosmic::theme::Button::Custom {
-            active: Box::new(style(0.05)),
-            disabled: Box::new(move |t| style(0.03)(false, t)),
-            hovered: Box::new(style(0.14)),
-            pressed: Box::new(style(0.20)),
-        })
         .on_press(Message::Control(
             id,
             "select".into(),
@@ -585,6 +577,7 @@ impl Hub {
             expand_open: false,
             expand_loading: false,
             config_open: None,
+            settings_open: false,
             battery: read_battery(),
             redraw_until: None,
         };
@@ -618,11 +611,24 @@ impl Hub {
         self.expand_open = false;
         self.expand_loading = false;
         let fresh = Config::load();
-        if fresh.instances == self.config.instances {
-            return;
-        }
+        // Always adopt the latest config (so settings changes are picked up), but
+        // only rebuild the tiles when the layout actually changed — rebuilding
+        // recreates the modules, dropping their live state.
+        let layout_changed = fresh.instances != self.config.instances;
         self.config = fresh;
-        self.rebuild(false);
+        if layout_changed {
+            self.rebuild(false);
+        }
+    }
+
+    /// The panel applet's icon presentation (single icon vs. status cluster).
+    pub fn applet_icons(&self) -> crate::config::AppletIcons {
+        self.config.settings.applet_icons
+    }
+
+    /// Which indicators the status cluster should show.
+    pub fn cluster_icons(&self) -> crate::config::ClusterIcons {
+        self.config.settings.cluster
     }
 
     /// The tile grid. In edit mode it's a `ReorderableFlexRow` (drag to reorder)
@@ -842,16 +848,76 @@ impl Hub {
             .height(Length::Fill)
             .push(self.sidebar())
             .push(widget::container(canvas).width(Length::Fill).height(Length::Fill));
-        // Right-hand config surface for the selected tile (its gear sets
-        // `config_open`). Only configurable tiles have a gear, so this appears
-        // only when there's something to configure.
-        if let Some(inst) = self
+        // Right-hand surface: the app-wide Settings panel takes precedence, else
+        // the selected tile's config (its gear sets `config_open`). Only one
+        // occupies the slot at a time.
+        if self.settings_open {
+            row = row.push(self.settings_sidebar());
+        } else if let Some(inst) = self
             .config_open
             .and_then(|id| self.instances.iter().find(|i| i.id == id))
         {
             row = row.push(self.config_sidebar(inst));
         }
         row.into()
+    }
+
+    /// The editor's right sidebar when app-wide Settings is open: the foundation
+    /// for global preferences. First control: the panel applet's icon mode.
+    fn settings_sidebar(&self) -> Element<'_, Message> {
+        let header = widget::Row::new()
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .push(widget::icon::from_name("preferences-system-symbolic").size(18))
+            .push(widget::text::title4("Settings"))
+            .push(widget::space::horizontal())
+            .push(round_btn("window-close-symbolic", Message::ToggleSettings));
+
+        let choices = vec!["Single icon".to_string(), "Status cluster".to_string()];
+        let selected = match self.config.settings.applet_icons {
+            crate::config::AppletIcons::Single => 0,
+            crate::config::AppletIcons::Status => 1,
+        };
+        let applet_icons = widget::Column::new()
+            .spacing(6)
+            .push(widget::text::body("Panel applet icons"))
+            .push(
+                widget::text::caption(
+                    "A single control-center icon, or a cluster of live status icons \
+                     (Wi-Fi, audio, Bluetooth, …).",
+                )
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+            )
+            .push(widget::dropdown(choices, Some(selected), Message::SetAppletIcons));
+
+        let mut inner = widget::Column::new()
+            .spacing(16)
+            .push(header)
+            .push(widget::divider::horizontal::default())
+            .push(applet_icons);
+
+        // The per-indicator toggles only matter in cluster mode.
+        if matches!(self.config.settings.applet_icons, crate::config::AppletIcons::Status) {
+            let cluster = self.config.settings.cluster;
+            let mut toggles = widget::Column::new()
+                .spacing(8)
+                .push(widget::text::body("Show in cluster"));
+            for (icon, label) in crate::config::ClusterIcon::ALL {
+                toggles = toggles.push(
+                    widget::checkbox(cluster.enabled(icon))
+                        .label(label)
+                        .on_toggle(move |_| Message::ToggleClusterIcon(icon)),
+                );
+            }
+            inner = inner.push(toggles);
+        }
+
+        widget::container(inner)
+            .width(Length::Fixed(260.0))
+            .height(Length::Fill)
+            .padding(16)
+            .class(theme::card(false, theme::accent()))
+            .into()
     }
 
     /// The editor's right sidebar: settings for the selected tile. Grows as
@@ -944,7 +1010,16 @@ impl Hub {
             .push(
                 widget::scrollable(widget::container(list).padding([0, 12, 0, 0]))
                     .height(Length::Fill),
-            );
+            )
+            // App-wide settings, pinned at the bottom (the Fill scrollable above
+            // pushes it down).
+            .push(widget::divider::horizontal::default())
+            .push(sidebar_item(
+                "preferences-system-symbolic",
+                "Settings",
+                Message::ToggleSettings,
+                true,
+            ));
         widget::container(inner)
             .width(Length::Fixed(264.0))
             .height(Length::Fill)
@@ -962,6 +1037,7 @@ impl Hub {
                     if !self.edit {
                         self.palette_open = false;
                         self.config_open = None;
+                        self.settings_open = false;
                     }
                     self.bump_redraw();
                 }
@@ -972,7 +1048,10 @@ impl Hub {
             }
             // Applet-only plumbing — handled by the Applet host, never reaches
             // the editor; arms here keep the match exhaustive.
-            Message::Surface(_) | Message::PopupClosed(_) | Message::Token(_) => {}
+            Message::Surface(_)
+            | Message::PopupClosed(_)
+            | Message::Token(_)
+            | Message::Status(_) => {}
             Message::OpenPalette => {
                 self.palette_open = !self.palette_open;
                 self.bump_redraw();
@@ -1012,6 +1091,28 @@ impl Hub {
             }
             Message::ToggleConfig(id) => {
                 self.config_open = if self.config_open == Some(id) { None } else { Some(id) };
+                // The two right-sidebar surfaces are mutually exclusive.
+                self.settings_open = false;
+                self.bump_redraw();
+            }
+            Message::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                if self.settings_open {
+                    self.config_open = None;
+                }
+                self.bump_redraw();
+            }
+            Message::SetAppletIcons(index) => {
+                self.config.settings.applet_icons = match index {
+                    1 => crate::config::AppletIcons::Status,
+                    _ => crate::config::AppletIcons::Single,
+                };
+                self.config.save();
+                self.bump_redraw();
+            }
+            Message::ToggleClusterIcon(icon) => {
+                self.config.settings.cluster.toggle(icon);
+                self.config.save();
                 self.bump_redraw();
             }
             Message::Expand(id) => {
@@ -1241,25 +1342,55 @@ fn round_btn<'a>(icon: &str, msg: Message) -> Element<'a, Message> {
         .into()
 }
 
-/// Read the first real battery from sysfs as (percent, charging?). Returns
-/// `None` on desktops (no `power_supply` of type `Battery`).
+/// Read the **system** battery from sysfs as (percent, charging?). Returns
+/// `None` on desktops (no system `power_supply` of type `Battery`).
+///
+/// Skips peripheral batteries (wireless mouse/keyboard/controller), which also
+/// report `type=Battery` but are `scope=Device` and often read 0% — picking one
+/// of those was why the readout disagreed with COSMIC's battery applet.
 fn read_battery() -> Option<(u8, bool)> {
-    let dir = std::fs::read_dir("/sys/class/power_supply").ok()?;
-    for entry in dir.flatten() {
+    let read = |p: &std::path::Path, f: &str| std::fs::read_to_string(p.join(f));
+    let mut fallback: Option<(u8, bool)> = None;
+    for entry in std::fs::read_dir("/sys/class/power_supply").ok()?.flatten() {
         let path = entry.path();
-        let kind = std::fs::read_to_string(path.join("type")).unwrap_or_default();
-        if kind.trim() != "Battery" {
+        if read(&path, "type").unwrap_or_default().trim() != "Battery" {
             continue;
         }
-        let Ok(cap) = std::fs::read_to_string(path.join("capacity")) else {
+        // Peripherals are scope=Device; the laptop battery is System or absent.
+        if read(&path, "scope").unwrap_or_default().trim() == "Device" {
+            continue;
+        }
+        let Some(pct) = battery_pct(&path) else {
             continue;
         };
-        let Ok(pct) = cap.trim().parse::<u8>() else {
-            continue;
-        };
-        let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
-        let charging = matches!(status.trim(), "Charging" | "Full");
-        return Some((pct.min(100), charging));
+        let charging = matches!(read(&path, "status").unwrap_or_default().trim(), "Charging" | "Full");
+        // Prefer the conventional BAT* main battery; otherwise keep the first
+        // non-peripheral battery (covers names like CMB0, macsmc-battery).
+        if entry.file_name().to_string_lossy().starts_with("BAT") {
+            return Some((pct, charging));
+        }
+        fallback.get_or_insert((pct, charging));
+    }
+    fallback
+}
+
+/// Battery percentage from `capacity`, or computed from `energy_*`/`charge_*`
+/// when that file is absent (some firmware doesn't expose `capacity`).
+fn battery_pct(path: &std::path::Path) -> Option<u8> {
+    let read = |f: &str| std::fs::read_to_string(path.join(f));
+    if let Ok(cap) = read("capacity") {
+        if let Ok(p) = cap.trim().parse::<u8>() {
+            return Some(p.min(100));
+        }
+    }
+    for (now, full) in [("energy_now", "energy_full"), ("charge_now", "charge_full")] {
+        if let (Ok(n), Ok(f)) = (read(now), read(full)) {
+            if let (Ok(n), Ok(f)) = (n.trim().parse::<f64>(), f.trim().parse::<f64>()) {
+                if f > 0.0 {
+                    return Some((n / f * 100.0).round().clamp(0.0, 100.0) as u8);
+                }
+            }
+        }
     }
     None
 }

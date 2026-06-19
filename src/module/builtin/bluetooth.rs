@@ -71,6 +71,18 @@ fn fetch(want_entries: bool) -> BtData {
     d
 }
 
+/// The Bluetooth icon for a power/connection state. Shared by the tile and the
+/// panel status cluster (all names are in the Cosmic icon theme).
+pub fn state_icon(on: bool, connected: usize) -> &'static str {
+    if !on {
+        "bluetooth-disabled-symbolic"
+    } else if connected > 0 {
+        "bluetooth-active-symbolic"
+    } else {
+        "bluetooth-symbolic"
+    }
+}
+
 /// Parse a `bluetoothctl devices ...` listing into (mac, name) pairs.
 fn devices(cmd: &str) -> Vec<(String, String)> {
     super::out(cmd)
@@ -150,6 +162,10 @@ impl Module for BluetoothModule {
         &self.desc
     }
 
+    fn status_icon(&self) -> String {
+        state_icon(self.on, self.connected).to_string()
+    }
+
     fn view(&self, id: InstanceId, edit: bool, width: f32) -> Element<'_, Message> {
         // Base label: the device name when one is connected, else a count.
         let status = if !self.on {
@@ -167,12 +183,13 @@ impl Module for BluetoothModule {
                 None => base,
             }
         };
+        let icon = self.status_icon();
         super::toggle_tile(
             id,
             width,
             self.on,
             edit,
-            self.desc.icon.as_str(),
+            &icon,
             "Bluetooth",
             &status,
             super::Chevron::Expand,

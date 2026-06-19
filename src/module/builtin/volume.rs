@@ -11,6 +11,20 @@ use std::process::Command;
 
 const SINK: &str = "@DEFAULT_AUDIO_SINK@";
 
+/// Speaker icon by mute state and level (Cosmic theme has the full set). Shared
+/// by the volume tile and the panel status cluster.
+pub fn volume_icon(muted: bool, level: f32) -> &'static str {
+    if muted || level <= 0.0 {
+        "audio-volume-muted-symbolic"
+    } else if level < 0.34 {
+        "audio-volume-low-symbolic"
+    } else if level < 0.67 {
+        "audio-volume-medium-symbolic"
+    } else {
+        "audio-volume-high-symbolic"
+    }
+}
+
 pub struct VolumeModule {
     desc: ModuleDescriptor,
     value: f32,
@@ -90,11 +104,7 @@ impl Module for VolumeModule {
         } else {
             format!("{:.0}%", self.value * 100.0)
         };
-        let icon = if self.muted {
-            "audio-volume-muted-symbolic"
-        } else {
-            "audio-volume-high-symbolic"
-        };
+        let icon = volume_icon(self.muted, self.value);
         // Volume can exceed 100%; cap the displayed bar at 1.0.
         super::slider_tile(
             id,
