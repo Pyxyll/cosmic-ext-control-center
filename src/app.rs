@@ -59,6 +59,8 @@ pub struct Hub {
     expand_loading: bool,
     /// (Editor) the tile whose option picker (gear) is revealed, if any.
     config_open: Option<InstanceId>,
+    /// (Editor) whether the app-wide Settings panel is open in the right sidebar.
+    settings_open: bool,
     /// Latest battery reading (percent, charging?), refreshed on poll. `None`
     /// on desktops with no battery — the readout is simply hidden.
     battery: Option<(u8, bool)>,
@@ -83,6 +85,12 @@ pub enum Message {
     SetOption(InstanceId, usize),
     /// (Editor) toggle the option picker (gear) for a tile.
     ToggleConfig(InstanceId),
+    /// (Editor) toggle the app-wide Settings panel.
+    ToggleSettings,
+    /// (Editor) pick the panel applet's icon mode (index into the choices).
+    SetAppletIcons(usize),
+    /// (Editor) toggle one indicator's visibility in the status cluster.
+    ToggleClusterIcon(crate::config::ClusterIcon),
     /// Toggle a tile's inline selection list (Wi-Fi networks, devices, VPN
     /// profiles). Expanding triggers a one-off scan of that module.
     Expand(InstanceId),
@@ -109,6 +117,9 @@ pub enum Message {
     PowerCancel,
     /// Launch the companion config app (the applet's gear, when editing is off).
     OpenConfig,
+    /// (applet) A status source (D-Bus / pactl) reported new system state for
+    /// the panel status-icon cluster. Ignored by the editor.
+    Status(crate::status::Update),
     /// (applet) Layer-shell surface plumbing for the panel popup.
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
@@ -566,6 +577,7 @@ impl Hub {
             expand_open: false,
             expand_loading: false,
             config_open: None,
+            settings_open: false,
             battery: read_battery(),
             redraw_until: None,
         };
@@ -599,11 +611,24 @@ impl Hub {
         self.expand_open = false;
         self.expand_loading = false;
         let fresh = Config::load();
-        if fresh.instances == self.config.instances {
-            return;
-        }
+        // Always adopt the latest config (so settings changes are picked up), but
+        // only rebuild the tiles when the layout actually changed — rebuilding
+        // recreates the modules, dropping their live state.
+        let layout_changed = fresh.instances != self.config.instances;
         self.config = fresh;
-        self.rebuild(false);
+        if layout_changed {
+            self.rebuild(false);
+        }
+    }
+
+    /// The panel applet's icon presentation (single icon vs. status cluster).
+    pub fn applet_icons(&self) -> crate::config::AppletIcons {
+        self.config.settings.applet_icons
+    }
+
+    /// Which indicators the status cluster should show.
+    pub fn cluster_icons(&self) -> crate::config::ClusterIcons {
+        self.config.settings.cluster
     }
 
     /// The tile grid. In edit mode it's a `ReorderableFlexRow` (drag to reorder)
@@ -823,16 +848,76 @@ impl Hub {
             .height(Length::Fill)
             .push(self.sidebar())
             .push(widget::container(canvas).width(Length::Fill).height(Length::Fill));
-        // Right-hand config surface for the selected tile (its gear sets
-        // `config_open`). Only configurable tiles have a gear, so this appears
-        // only when there's something to configure.
-        if let Some(inst) = self
+        // Right-hand surface: the app-wide Settings panel takes precedence, else
+        // the selected tile's config (its gear sets `config_open`). Only one
+        // occupies the slot at a time.
+        if self.settings_open {
+            row = row.push(self.settings_sidebar());
+        } else if let Some(inst) = self
             .config_open
             .and_then(|id| self.instances.iter().find(|i| i.id == id))
         {
             row = row.push(self.config_sidebar(inst));
         }
         row.into()
+    }
+
+    /// The editor's right sidebar when app-wide Settings is open: the foundation
+    /// for global preferences. First control: the panel applet's icon mode.
+    fn settings_sidebar(&self) -> Element<'_, Message> {
+        let header = widget::Row::new()
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .push(widget::icon::from_name("preferences-system-symbolic").size(18))
+            .push(widget::text::title4("Settings"))
+            .push(widget::space::horizontal())
+            .push(round_btn("window-close-symbolic", Message::ToggleSettings));
+
+        let choices = vec!["Single icon".to_string(), "Status cluster".to_string()];
+        let selected = match self.config.settings.applet_icons {
+            crate::config::AppletIcons::Single => 0,
+            crate::config::AppletIcons::Status => 1,
+        };
+        let applet_icons = widget::Column::new()
+            .spacing(6)
+            .push(widget::text::body("Panel applet icons"))
+            .push(
+                widget::text::caption(
+                    "A single control-center icon, or a cluster of live status icons \
+                     (Wi-Fi, audio, Bluetooth, …).",
+                )
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+            )
+            .push(widget::dropdown(choices, Some(selected), Message::SetAppletIcons));
+
+        let mut inner = widget::Column::new()
+            .spacing(16)
+            .push(header)
+            .push(widget::divider::horizontal::default())
+            .push(applet_icons);
+
+        // The per-indicator toggles only matter in cluster mode.
+        if matches!(self.config.settings.applet_icons, crate::config::AppletIcons::Status) {
+            let cluster = self.config.settings.cluster;
+            let mut toggles = widget::Column::new()
+                .spacing(8)
+                .push(widget::text::body("Show in cluster"));
+            for (icon, label) in crate::config::ClusterIcon::ALL {
+                toggles = toggles.push(
+                    widget::checkbox(cluster.enabled(icon))
+                        .label(label)
+                        .on_toggle(move |_| Message::ToggleClusterIcon(icon)),
+                );
+            }
+            inner = inner.push(toggles);
+        }
+
+        widget::container(inner)
+            .width(Length::Fixed(260.0))
+            .height(Length::Fill)
+            .padding(16)
+            .class(theme::card(false, theme::accent()))
+            .into()
     }
 
     /// The editor's right sidebar: settings for the selected tile. Grows as
@@ -925,7 +1010,16 @@ impl Hub {
             .push(
                 widget::scrollable(widget::container(list).padding([0, 12, 0, 0]))
                     .height(Length::Fill),
-            );
+            )
+            // App-wide settings, pinned at the bottom (the Fill scrollable above
+            // pushes it down).
+            .push(widget::divider::horizontal::default())
+            .push(sidebar_item(
+                "preferences-system-symbolic",
+                "Settings",
+                Message::ToggleSettings,
+                true,
+            ));
         widget::container(inner)
             .width(Length::Fixed(264.0))
             .height(Length::Fill)
@@ -943,6 +1037,7 @@ impl Hub {
                     if !self.edit {
                         self.palette_open = false;
                         self.config_open = None;
+                        self.settings_open = false;
                     }
                     self.bump_redraw();
                 }
@@ -953,7 +1048,10 @@ impl Hub {
             }
             // Applet-only plumbing — handled by the Applet host, never reaches
             // the editor; arms here keep the match exhaustive.
-            Message::Surface(_) | Message::PopupClosed(_) | Message::Token(_) => {}
+            Message::Surface(_)
+            | Message::PopupClosed(_)
+            | Message::Token(_)
+            | Message::Status(_) => {}
             Message::OpenPalette => {
                 self.palette_open = !self.palette_open;
                 self.bump_redraw();
@@ -993,6 +1091,28 @@ impl Hub {
             }
             Message::ToggleConfig(id) => {
                 self.config_open = if self.config_open == Some(id) { None } else { Some(id) };
+                // The two right-sidebar surfaces are mutually exclusive.
+                self.settings_open = false;
+                self.bump_redraw();
+            }
+            Message::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                if self.settings_open {
+                    self.config_open = None;
+                }
+                self.bump_redraw();
+            }
+            Message::SetAppletIcons(index) => {
+                self.config.settings.applet_icons = match index {
+                    1 => crate::config::AppletIcons::Status,
+                    _ => crate::config::AppletIcons::Single,
+                };
+                self.config.save();
+                self.bump_redraw();
+            }
+            Message::ToggleClusterIcon(icon) => {
+                self.config.settings.cluster.toggle(icon);
+                self.config.save();
                 self.bump_redraw();
             }
             Message::Expand(id) => {

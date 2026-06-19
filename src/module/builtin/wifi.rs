@@ -13,6 +13,8 @@ pub struct WifiModule {
     ssid: Option<String>,
     /// Negotiated link rate in Mb/s for the active connection, if any.
     rate: Option<u32>,
+    /// Signal strength (0-100) of the active connection, for the tile icon.
+    signal: Option<u32>,
     /// Networks for the inline selection list, populated when expanded.
     nets: Vec<Net>,
     /// Whether the drawer is open, so the (slower) network scan is only fetched
@@ -42,6 +44,7 @@ struct WifiData {
     available: bool,
     ssid: Option<String>,
     rate: Option<u32>,
+    signal: Option<u32>,
     nets: Vec<Net>,
 }
 
@@ -64,6 +67,9 @@ fn fetch(want_entries: bool, rescan: bool) -> WifiData {
     // containing ':' can't break field parsing).
     d.rate = super::out("nmcli -t -f active,rate dev wifi")
         .and_then(|o| o.lines().find_map(|l| l.strip_prefix("yes:").and_then(parse_rate)));
+    // Signal of the active AP (numeric, so no SSID-colon hazard) for the icon.
+    d.signal = super::out("nmcli -t -f active,signal dev wifi")
+        .and_then(|o| o.lines().find_map(|l| l.strip_prefix("yes:").and_then(|s| s.trim().parse().ok())));
     if want_entries {
         d.nets = scan_networks(rescan);
     }
@@ -140,6 +146,25 @@ fn parse_rate(s: &str) -> Option<u32> {
         .filter(|n| *n > 0)
 }
 
+/// The Wi-Fi icon for a radio/connection state and signal strength. Shared by
+/// the tile and the panel status cluster. All names resolve under the Cosmic
+/// icon theme (signal-* are Cosmic's; disabled is inherited from Pop).
+pub fn signal_icon(on: bool, connected: bool, signal: Option<u32>) -> &'static str {
+    if !on {
+        return "network-wireless-disabled-symbolic";
+    }
+    if !connected {
+        return "network-wireless-signal-none-symbolic";
+    }
+    match signal.unwrap_or(0) {
+        0..=20 => "network-wireless-signal-none-symbolic",
+        21..=40 => "network-wireless-signal-weak-symbolic",
+        41..=60 => "network-wireless-signal-ok-symbolic",
+        61..=80 => "network-wireless-signal-good-symbolic",
+        _ => "network-wireless-signal-excellent-symbolic",
+    }
+}
+
 /// Truncate a long label to fit a tile, with an ellipsis.
 fn ellipsize(s: &str, max: usize) -> String {
     if s.chars().count() > max {
@@ -163,6 +188,7 @@ impl WifiModule {
             available: false,
             ssid: None,
             rate: None,
+            signal: None,
             nets: Vec::new(),
             want_entries: false,
             pending: None,
@@ -178,6 +204,7 @@ impl WifiModule {
         self.available = d.available;
         self.ssid = d.ssid;
         self.rate = d.rate;
+        self.signal = d.signal;
         // Keep the existing list when this refresh didn't scan (drawer closed).
         if self.want_entries {
             self.nets = d.nets;
@@ -188,6 +215,10 @@ impl WifiModule {
 impl Module for WifiModule {
     fn descriptor(&self) -> &ModuleDescriptor {
         &self.desc
+    }
+
+    fn status_icon(&self) -> String {
+        signal_icon(self.on, self.on && self.ssid.is_some(), self.signal).to_string()
     }
 
     fn view(&self, id: InstanceId, edit: bool, width: f32) -> Element<'_, Message> {
@@ -209,7 +240,8 @@ impl Module for WifiModule {
         } else {
             "Not connected".to_string()
         };
-        super::toggle_tile(id, width, self.on, edit, self.desc.icon.as_str(), &label, &status, super::Chevron::Expand)
+        let icon = self.status_icon();
+        super::toggle_tile(id, width, self.on, edit, &icon, &label, &status, super::Chevron::Expand)
     }
 
     fn on_control(&mut self, control: &str, value: ControlValue) -> Task<Message> {
@@ -324,6 +356,7 @@ impl Module for WifiModule {
                 available: d.available,
                 ssid: d.ssid.clone(),
                 rate: d.rate,
+                signal: d.signal,
                 nets: d.nets.clone(),
             });
         }

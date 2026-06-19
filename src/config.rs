@@ -8,6 +8,16 @@ use std::collections::BTreeMap;
 
 pub const APP_ID: &str = "com.pyxyll.CosmicExtControlCenter";
 
+/// How the panel applet's button presents itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AppletIcons {
+    /// A single control-center icon — the original behaviour.
+    #[default]
+    Single,
+    /// A cluster of live status icons (Wi-Fi/VPN, audio, Bluetooth, …).
+    Status,
+}
+
 /// One placed tile: which module type, its instance id, and its size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceConfig {
@@ -28,6 +38,97 @@ pub struct Config {
     pub instances: Vec<InstanceConfig>,
     /// Monotonic counter for assigning new instance ids.
     pub next_id: u32,
+    /// App-wide settings, distinct from the per-tile layout above. A separate
+    /// cosmic-config key, so it defaults cleanly for configs written before it.
+    pub settings: Settings,
+}
+
+/// App-wide preferences (the editor's Settings surface). Grouped in one struct
+/// so future global options land here without touching the layout fields.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Settings {
+    /// Single control-center icon vs. a live status cluster in the panel.
+    #[serde(default)]
+    pub applet_icons: AppletIcons,
+    /// Which indicators appear in the status cluster (independent of the tile
+    /// layout — the popup still exposes everything).
+    #[serde(default)]
+    pub cluster: ClusterIcons,
+}
+
+/// Per-indicator visibility for the panel status cluster. All on by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterIcons {
+    #[serde(default = "yes")]
+    pub power: bool,
+    #[serde(default = "yes")]
+    pub network: bool,
+    #[serde(default = "yes")]
+    pub audio: bool,
+    #[serde(default = "yes")]
+    pub bluetooth: bool,
+    #[serde(default = "yes")]
+    pub power_profile: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for ClusterIcons {
+    fn default() -> Self {
+        Self {
+            power: true,
+            network: true,
+            audio: true,
+            bluetooth: true,
+            power_profile: true,
+        }
+    }
+}
+
+/// One configurable cluster indicator, for the Settings toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterIcon {
+    Power,
+    Network,
+    Audio,
+    Bluetooth,
+    PowerProfile,
+}
+
+impl ClusterIcon {
+    /// In display order, with their settings labels.
+    pub const ALL: [(ClusterIcon, &'static str); 5] = [
+        (ClusterIcon::Power, "Power"),
+        (ClusterIcon::Network, "Wi-Fi / VPN"),
+        (ClusterIcon::Audio, "Audio"),
+        (ClusterIcon::Bluetooth, "Bluetooth"),
+        (ClusterIcon::PowerProfile, "Power profile"),
+    ];
+}
+
+impl ClusterIcons {
+    pub fn enabled(&self, i: ClusterIcon) -> bool {
+        match i {
+            ClusterIcon::Power => self.power,
+            ClusterIcon::Network => self.network,
+            ClusterIcon::Audio => self.audio,
+            ClusterIcon::Bluetooth => self.bluetooth,
+            ClusterIcon::PowerProfile => self.power_profile,
+        }
+    }
+
+    pub fn toggle(&mut self, i: ClusterIcon) {
+        let slot = match i {
+            ClusterIcon::Power => &mut self.power,
+            ClusterIcon::Network => &mut self.network,
+            ClusterIcon::Audio => &mut self.audio,
+            ClusterIcon::Bluetooth => &mut self.bluetooth,
+            ClusterIcon::PowerProfile => &mut self.power_profile,
+        };
+        *slot = !*slot;
+    }
 }
 
 impl Default for Config {
@@ -35,6 +136,7 @@ impl Default for Config {
         Self {
             instances: Vec::new(),
             next_id: 1,
+            settings: Settings::default(),
         }
     }
 }
