@@ -645,7 +645,7 @@ impl Hub {
                 // outside the card so it never overlaps the tile's own controls.
                 let has_options = !inst.module.option_choices().is_empty();
                 let mut actions = widget::Row::new()
-                    .spacing(6)
+                    .spacing(3)
                     .align_y(Alignment::Center)
                     .push(widget::space::horizontal());
                 // A gear (only when the module has an option) reveals the picker
@@ -660,11 +660,16 @@ impl Hub {
                         Message::ResizeInstance(inst.id),
                     ));
                 }
+                // A close (×), not a minus: this removes the tile, it doesn't
+                // shrink or collapse it.
                 actions = actions.push(round_btn(
-                    "list-remove-symbolic",
+                    "window-close-symbolic",
                     Message::RemoveInstance(inst.id),
                 ));
-                let bar = widget::container(actions).width(Length::Fixed(w)).padding([0, 6]);
+                // Tight horizontal padding so three action buttons (gear + resize
+                // + remove) still fit on a 1-col tile like the disk gauge without
+                // clipping the rightmost one.
+                let bar = widget::container(actions).width(Length::Fixed(w)).padding([0, 2]);
                 // Clip the body to the (animating) width so a tile growing in or
                 // shrinking out reveals/wipes cleanly instead of letting oversized
                 // children (e.g. album art) spill past the shrinking card.
@@ -799,7 +804,7 @@ impl Hub {
         }
         if self.edit {
             col = col.push(
-                widget::text::caption("Drag to rearrange · ⛶ resizes · − removes")
+                widget::text::caption("Drag to rearrange · ⛶ resizes · × removes")
                     .class(cosmic::style::Text::Custom(theme::dim_text)),
             );
             col = col.push(Self::grid_ruler());
@@ -823,7 +828,7 @@ impl Hub {
     /// modules, and the live grid as the arrangement canvas (always in edit
     /// mode). Reuses `grid()` — this is the same grid the applet renders.
     pub fn editor_view(&self) -> Element<'_, Message> {
-        let hint = widget::text::caption("Drag to rearrange · ⛶ resizes · − removes")
+        let hint = widget::text::caption("Drag to rearrange · ⛶ resizes · × removes")
             .class(cosmic::style::Text::Custom(theme::dim_text));
 
         // The grid is a fixed 4-column block; cap it with an inner container,
@@ -1326,12 +1331,12 @@ fn round_btn<'a>(icon: &str, msg: Message) -> Element<'a, Message> {
             s
         }
     };
-    // Don't fix the button to 24×24: that forces min=max=24 limits onto the
-    // content, and iced's `limits.resolve` clamps the icon's Fixed(size) UP to
-    // that 24px floor — so `.size()` was silently ignored. Instead shrink-wrap:
-    // the 24px circle = 10px glyph + 7px padding on every side (10 + 2·7 = 24).
-    widget::button::custom(widget::icon::from_name(icon).size(10))
-        .padding(7)
+    // `button::icon` is cosmic's standard icon button — it reliably centres the
+    // glyph (the manual `button::custom` layout did not). It renders the icon at
+    // a fixed 16px; padding 4 on every side makes a 24×24 square, so the rounded
+    // style (radius 12) is a true circle.
+    widget::button::icon(widget::icon::from_name(icon).size(16))
+        .padding(4)
         .class(cosmic::theme::Button::Custom {
             active: Box::new(style(0.16)),
             disabled: Box::new(move |t| style(0.10)(false, t)),
