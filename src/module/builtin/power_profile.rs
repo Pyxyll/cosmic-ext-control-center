@@ -29,7 +29,7 @@ fn pretty(p: &str) -> String {
 /// Per-profile glyph, so the icon reflects the mode. Uses the `battery-profile-*`
 /// names (present in Breeze/Papirus; the `power-profile-*` set is Adwaita-only,
 /// which isn't in COSMIC's icon-lookup fallback chain, so it rendered blank).
-fn profile_icon(p: &str) -> &'static str {
+pub fn profile_icon(p: &str) -> &'static str {
     match p {
         "power-saver" => "battery-profile-powersave-symbolic",
         "performance" => "battery-profile-performance-symbolic",

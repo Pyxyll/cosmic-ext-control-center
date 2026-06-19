@@ -50,6 +50,85 @@ pub struct Settings {
     /// Single control-center icon vs. a live status cluster in the panel.
     #[serde(default)]
     pub applet_icons: AppletIcons,
+    /// Which indicators appear in the status cluster (independent of the tile
+    /// layout — the popup still exposes everything).
+    #[serde(default)]
+    pub cluster: ClusterIcons,
+}
+
+/// Per-indicator visibility for the panel status cluster. All on by default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClusterIcons {
+    #[serde(default = "yes")]
+    pub power: bool,
+    #[serde(default = "yes")]
+    pub network: bool,
+    #[serde(default = "yes")]
+    pub audio: bool,
+    #[serde(default = "yes")]
+    pub bluetooth: bool,
+    #[serde(default = "yes")]
+    pub power_profile: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Default for ClusterIcons {
+    fn default() -> Self {
+        Self {
+            power: true,
+            network: true,
+            audio: true,
+            bluetooth: true,
+            power_profile: true,
+        }
+    }
+}
+
+/// One configurable cluster indicator, for the Settings toggles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterIcon {
+    Power,
+    Network,
+    Audio,
+    Bluetooth,
+    PowerProfile,
+}
+
+impl ClusterIcon {
+    /// In display order, with their settings labels.
+    pub const ALL: [(ClusterIcon, &'static str); 5] = [
+        (ClusterIcon::Power, "Power"),
+        (ClusterIcon::Network, "Wi-Fi / VPN"),
+        (ClusterIcon::Audio, "Audio"),
+        (ClusterIcon::Bluetooth, "Bluetooth"),
+        (ClusterIcon::PowerProfile, "Power profile"),
+    ];
+}
+
+impl ClusterIcons {
+    pub fn enabled(&self, i: ClusterIcon) -> bool {
+        match i {
+            ClusterIcon::Power => self.power,
+            ClusterIcon::Network => self.network,
+            ClusterIcon::Audio => self.audio,
+            ClusterIcon::Bluetooth => self.bluetooth,
+            ClusterIcon::PowerProfile => self.power_profile,
+        }
+    }
+
+    pub fn toggle(&mut self, i: ClusterIcon) {
+        let slot = match i {
+            ClusterIcon::Power => &mut self.power,
+            ClusterIcon::Network => &mut self.network,
+            ClusterIcon::Audio => &mut self.audio,
+            ClusterIcon::Bluetooth => &mut self.bluetooth,
+            ClusterIcon::PowerProfile => &mut self.power_profile,
+        };
+        *slot = !*slot;
+    }
 }
 
 impl Default for Config {

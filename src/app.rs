@@ -89,6 +89,8 @@ pub enum Message {
     ToggleSettings,
     /// (Editor) pick the panel applet's icon mode (index into the choices).
     SetAppletIcons(usize),
+    /// (Editor) toggle one indicator's visibility in the status cluster.
+    ToggleClusterIcon(crate::config::ClusterIcon),
     /// Toggle a tile's inline selection list (Wi-Fi networks, devices, VPN
     /// profiles). Expanding triggers a one-off scan of that module.
     Expand(InstanceId),
@@ -115,6 +117,9 @@ pub enum Message {
     PowerCancel,
     /// Launch the companion config app (the applet's gear, when editing is off).
     OpenConfig,
+    /// (applet) A status source (D-Bus / pactl) reported new system state for
+    /// the panel status-icon cluster. Ignored by the editor.
+    Status(crate::status::Update),
     /// (applet) Layer-shell surface plumbing for the panel popup.
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
@@ -606,11 +611,24 @@ impl Hub {
         self.expand_open = false;
         self.expand_loading = false;
         let fresh = Config::load();
-        if fresh.instances == self.config.instances {
-            return;
-        }
+        // Always adopt the latest config (so settings changes are picked up), but
+        // only rebuild the tiles when the layout actually changed — rebuilding
+        // recreates the modules, dropping their live state.
+        let layout_changed = fresh.instances != self.config.instances;
         self.config = fresh;
-        self.rebuild(false);
+        if layout_changed {
+            self.rebuild(false);
+        }
+    }
+
+    /// The panel applet's icon presentation (single icon vs. status cluster).
+    pub fn applet_icons(&self) -> crate::config::AppletIcons {
+        self.config.settings.applet_icons
+    }
+
+    /// Which indicators the status cluster should show.
+    pub fn cluster_icons(&self) -> crate::config::ClusterIcons {
+        self.config.settings.cluster
     }
 
     /// The tile grid. In edit mode it's a `ReorderableFlexRow` (drag to reorder)
@@ -872,11 +890,27 @@ impl Hub {
             )
             .push(widget::dropdown(choices, Some(selected), Message::SetAppletIcons));
 
-        let inner = widget::Column::new()
+        let mut inner = widget::Column::new()
             .spacing(16)
             .push(header)
             .push(widget::divider::horizontal::default())
             .push(applet_icons);
+
+        // The per-indicator toggles only matter in cluster mode.
+        if matches!(self.config.settings.applet_icons, crate::config::AppletIcons::Status) {
+            let cluster = self.config.settings.cluster;
+            let mut toggles = widget::Column::new()
+                .spacing(8)
+                .push(widget::text::body("Show in cluster"));
+            for (icon, label) in crate::config::ClusterIcon::ALL {
+                toggles = toggles.push(
+                    widget::checkbox(cluster.enabled(icon))
+                        .label(label)
+                        .on_toggle(move |_| Message::ToggleClusterIcon(icon)),
+                );
+            }
+            inner = inner.push(toggles);
+        }
 
         widget::container(inner)
             .width(Length::Fixed(260.0))
@@ -1014,7 +1048,10 @@ impl Hub {
             }
             // Applet-only plumbing — handled by the Applet host, never reaches
             // the editor; arms here keep the match exhaustive.
-            Message::Surface(_) | Message::PopupClosed(_) | Message::Token(_) => {}
+            Message::Surface(_)
+            | Message::PopupClosed(_)
+            | Message::Token(_)
+            | Message::Status(_) => {}
             Message::OpenPalette => {
                 self.palette_open = !self.palette_open;
                 self.bump_redraw();
@@ -1070,6 +1107,11 @@ impl Hub {
                     1 => crate::config::AppletIcons::Status,
                     _ => crate::config::AppletIcons::Single,
                 };
+                self.config.save();
+                self.bump_redraw();
+            }
+            Message::ToggleClusterIcon(icon) => {
+                self.config.settings.cluster.toggle(icon);
                 self.config.save();
                 self.bump_redraw();
             }
