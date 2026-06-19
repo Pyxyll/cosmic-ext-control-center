@@ -179,6 +179,13 @@ pub trait Module {
     /// draws the remove/resize buttons itself.
     fn view(&self, id: InstanceId, edit: bool, width: f32) -> Element<'_, Message>;
 
+    /// Icon reflecting the module's *live* state (Wi-Fi signal, Bluetooth
+    /// connection, mute…), used by both the tile and the panel status cluster.
+    /// Defaults to the static descriptor icon; stateful modules override it.
+    fn status_icon(&self) -> String {
+        self.descriptor().icon.clone()
+    }
+
     /// The user changed one of this module's controls. (Named `on_control`,
     /// not `apply`, to avoid colliding with the `Apply` trait that
     /// `cosmic::prelude` brings into scope as a blanket impl.)
