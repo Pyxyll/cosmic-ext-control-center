@@ -454,33 +454,14 @@ fn entry_row<'a>(id: InstanceId, e: &ListEntry) -> Element<'a, Message> {
     if e.active {
         row = row.push(widget::icon::from_name("object-select-symbolic").size(18));
     }
-    let active = e.active;
-    let style = move |bg: f32| {
-        move |_focused: bool, t: &cosmic::Theme| {
-            let fg: cosmic::iced::Color = t.cosmic().background.on.into();
-            let mut s = cosmic::widget::button::Style::new();
-            // The connected entry sits on a steady accent tint; the rest react to
-            // hover.
-            let base = if active {
-                theme::alpha(theme::accent(), 0.18)
-            } else {
-                theme::alpha(fg, bg)
-            };
-            s.background = Some(cosmic::iced::Background::Color(base));
-            s.border_radius = 10.0.into();
-            s.icon_color = Some(fg);
-            s.text_color = Some(fg);
-            s
-        }
-    };
-    widget::button::custom(widget::container(row).padding([8, 12]))
+    // `MenuItem` is the built-in tappable-row style (hover highlight, rounded).
+    // The previous `Button::Custom` allocated four boxed style closures per row
+    // every render — ~60-80 allocations/frame across a full network list. The
+    // connected network is marked by the check icon above instead of a tint.
+    widget::button::custom(row)
+        .class(cosmic::theme::Button::MenuItem)
+        .padding([8, 12])
         .width(Length::Fill)
-        .class(cosmic::theme::Button::Custom {
-            active: Box::new(style(0.05)),
-            disabled: Box::new(move |t| style(0.03)(false, t)),
-            hovered: Box::new(style(0.14)),
-            pressed: Box::new(style(0.20)),
-        })
         .on_press(Message::Control(
             id,
             "select".into(),

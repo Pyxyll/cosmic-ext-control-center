@@ -5,6 +5,7 @@ use cosmic_ext_control_center::app;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    cosmic_ext_control_center::prefer_vulkan_backend();
     let settings = cosmic::app::Settings::default()
         .size_limits(
             cosmic::iced::Limits::NONE

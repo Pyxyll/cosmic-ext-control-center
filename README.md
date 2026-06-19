@@ -96,10 +96,12 @@ helper.
 
 ## Known issues
 
-The applet refreshes module state on a 2 second poll while the popup is open.
-Those queries are still synchronous, so a slow one (for example
-`bluetoothctl`) can briefly stutter the UI. Moving the refresh off the UI thread
-is planned.
+The inline Wi-Fi/Bluetooth/VPN selection drawer opens and closes instantly,
+without a slide animation. COSMIC renders applet popups in software (tiny_skia),
+so animating a reflow of the whole popup every frame is too expensive to stay
+smooth; the drawer is snappy without it. A non-reflowing transition is a
+possible future improvement. The app prefers the GPU (Vulkan) backend where one
+is available, which keeps the rest of the popup responsive.
 
 The plugin system is functional but experimental. For now it only supports
 `Cmd` actions and basic styling. D-Bus and HTTP actions, plus native-looking

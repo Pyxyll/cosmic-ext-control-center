@@ -3,6 +3,7 @@
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
+    cosmic_ext_control_center::prefer_vulkan_backend();
     match cosmic::applet::run::<cosmic_ext_control_center::applet::Applet>(()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
