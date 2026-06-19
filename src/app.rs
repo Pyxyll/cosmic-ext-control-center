@@ -1222,25 +1222,55 @@ fn round_btn<'a>(icon: &str, msg: Message) -> Element<'a, Message> {
         .into()
 }
 
-/// Read the first real battery from sysfs as (percent, charging?). Returns
-/// `None` on desktops (no `power_supply` of type `Battery`).
+/// Read the **system** battery from sysfs as (percent, charging?). Returns
+/// `None` on desktops (no system `power_supply` of type `Battery`).
+///
+/// Skips peripheral batteries (wireless mouse/keyboard/controller), which also
+/// report `type=Battery` but are `scope=Device` and often read 0% — picking one
+/// of those was why the readout disagreed with COSMIC's battery applet.
 fn read_battery() -> Option<(u8, bool)> {
-    let dir = std::fs::read_dir("/sys/class/power_supply").ok()?;
-    for entry in dir.flatten() {
+    let read = |p: &std::path::Path, f: &str| std::fs::read_to_string(p.join(f));
+    let mut fallback: Option<(u8, bool)> = None;
+    for entry in std::fs::read_dir("/sys/class/power_supply").ok()?.flatten() {
         let path = entry.path();
-        let kind = std::fs::read_to_string(path.join("type")).unwrap_or_default();
-        if kind.trim() != "Battery" {
+        if read(&path, "type").unwrap_or_default().trim() != "Battery" {
             continue;
         }
-        let Ok(cap) = std::fs::read_to_string(path.join("capacity")) else {
+        // Peripherals are scope=Device; the laptop battery is System or absent.
+        if read(&path, "scope").unwrap_or_default().trim() == "Device" {
+            continue;
+        }
+        let Some(pct) = battery_pct(&path) else {
             continue;
         };
-        let Ok(pct) = cap.trim().parse::<u8>() else {
-            continue;
-        };
-        let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
-        let charging = matches!(status.trim(), "Charging" | "Full");
-        return Some((pct.min(100), charging));
+        let charging = matches!(read(&path, "status").unwrap_or_default().trim(), "Charging" | "Full");
+        // Prefer the conventional BAT* main battery; otherwise keep the first
+        // non-peripheral battery (covers names like CMB0, macsmc-battery).
+        if entry.file_name().to_string_lossy().starts_with("BAT") {
+            return Some((pct, charging));
+        }
+        fallback.get_or_insert((pct, charging));
+    }
+    fallback
+}
+
+/// Battery percentage from `capacity`, or computed from `energy_*`/`charge_*`
+/// when that file is absent (some firmware doesn't expose `capacity`).
+fn battery_pct(path: &std::path::Path) -> Option<u8> {
+    let read = |f: &str| std::fs::read_to_string(path.join(f));
+    if let Ok(cap) = read("capacity") {
+        if let Ok(p) = cap.trim().parse::<u8>() {
+            return Some(p.min(100));
+        }
+    }
+    for (now, full) in [("energy_now", "energy_full"), ("charge_now", "charge_full")] {
+        if let (Ok(n), Ok(f)) = (read(now), read(full)) {
+            if let (Ok(n), Ok(f)) = (n.trim().parse::<f64>(), f.trim().parse::<f64>()) {
+                if f > 0.0 {
+                    return Some((n / f * 100.0).round().clamp(0.0, 100.0) as u8);
+                }
+            }
+        }
     }
     None
 }
