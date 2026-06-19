@@ -10,7 +10,7 @@
 
 use crate::app::Message;
 use crate::config::ClusterIcons;
-use crate::module::builtin::{bluetooth, power_profile, vpn, wifi};
+use crate::module::builtin::{bluetooth, power_profile, volume, vpn, wifi};
 use cosmic::iced::Subscription;
 use cosmic::iced::futures::{SinkExt, StreamExt};
 
@@ -90,7 +90,7 @@ impl StatusSnapshot {
             });
         }
         if show.audio {
-            v.push(audio_icon(self.audio_muted, self.audio_volume));
+            v.push(volume::volume_icon(self.audio_muted, self.audio_volume));
         }
         if show.bluetooth && self.bt_on {
             v.push(bluetooth::state_icon(true, self.bt_connected));
@@ -99,19 +99,6 @@ impl StatusSnapshot {
             v.push(power_profile::profile_icon(&self.profile));
         }
         v
-    }
-}
-
-/// Speaker icon by mute state and level (Cosmic theme has the full set).
-fn audio_icon(muted: bool, vol: f32) -> &'static str {
-    if muted || vol <= 0.0 {
-        "audio-volume-muted-symbolic"
-    } else if vol < 0.34 {
-        "audio-volume-low-symbolic"
-    } else if vol < 0.67 {
-        "audio-volume-medium-symbolic"
-    } else {
-        "audio-volume-high-symbolic"
     }
 }
 

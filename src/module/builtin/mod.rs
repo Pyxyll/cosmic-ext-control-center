@@ -11,7 +11,7 @@ mod microphone;
 mod mpris;
 pub(crate) mod power_profile;
 mod sysmon;
-mod volume;
+pub(crate) mod volume;
 pub(crate) mod vpn;
 pub(crate) mod wifi;
 
