@@ -8,6 +8,16 @@ use std::collections::BTreeMap;
 
 pub const APP_ID: &str = "com.pyxyll.CosmicExtControlCenter";
 
+/// How the panel applet's button presents itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AppletIcons {
+    /// A single control-center icon — the original behaviour.
+    #[default]
+    Single,
+    /// A cluster of live status icons (Wi-Fi/VPN, audio, Bluetooth, …).
+    Status,
+}
+
 /// One placed tile: which module type, its instance id, and its size.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstanceConfig {
@@ -28,6 +38,18 @@ pub struct Config {
     pub instances: Vec<InstanceConfig>,
     /// Monotonic counter for assigning new instance ids.
     pub next_id: u32,
+    /// App-wide settings, distinct from the per-tile layout above. A separate
+    /// cosmic-config key, so it defaults cleanly for configs written before it.
+    pub settings: Settings,
+}
+
+/// App-wide preferences (the editor's Settings surface). Grouped in one struct
+/// so future global options land here without touching the layout fields.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Settings {
+    /// Single control-center icon vs. a live status cluster in the panel.
+    #[serde(default)]
+    pub applet_icons: AppletIcons,
 }
 
 impl Default for Config {
@@ -35,6 +57,7 @@ impl Default for Config {
         Self {
             instances: Vec::new(),
             next_id: 1,
+            settings: Settings::default(),
         }
     }
 }

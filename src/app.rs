@@ -59,6 +59,8 @@ pub struct Hub {
     expand_loading: bool,
     /// (Editor) the tile whose option picker (gear) is revealed, if any.
     config_open: Option<InstanceId>,
+    /// (Editor) whether the app-wide Settings panel is open in the right sidebar.
+    settings_open: bool,
     /// Latest battery reading (percent, charging?), refreshed on poll. `None`
     /// on desktops with no battery — the readout is simply hidden.
     battery: Option<(u8, bool)>,
@@ -83,6 +85,10 @@ pub enum Message {
     SetOption(InstanceId, usize),
     /// (Editor) toggle the option picker (gear) for a tile.
     ToggleConfig(InstanceId),
+    /// (Editor) toggle the app-wide Settings panel.
+    ToggleSettings,
+    /// (Editor) pick the panel applet's icon mode (index into the choices).
+    SetAppletIcons(usize),
     /// Toggle a tile's inline selection list (Wi-Fi networks, devices, VPN
     /// profiles). Expanding triggers a one-off scan of that module.
     Expand(InstanceId),
@@ -566,6 +572,7 @@ impl Hub {
             expand_open: false,
             expand_loading: false,
             config_open: None,
+            settings_open: false,
             battery: read_battery(),
             redraw_until: None,
         };
@@ -823,16 +830,60 @@ impl Hub {
             .height(Length::Fill)
             .push(self.sidebar())
             .push(widget::container(canvas).width(Length::Fill).height(Length::Fill));
-        // Right-hand config surface for the selected tile (its gear sets
-        // `config_open`). Only configurable tiles have a gear, so this appears
-        // only when there's something to configure.
-        if let Some(inst) = self
+        // Right-hand surface: the app-wide Settings panel takes precedence, else
+        // the selected tile's config (its gear sets `config_open`). Only one
+        // occupies the slot at a time.
+        if self.settings_open {
+            row = row.push(self.settings_sidebar());
+        } else if let Some(inst) = self
             .config_open
             .and_then(|id| self.instances.iter().find(|i| i.id == id))
         {
             row = row.push(self.config_sidebar(inst));
         }
         row.into()
+    }
+
+    /// The editor's right sidebar when app-wide Settings is open: the foundation
+    /// for global preferences. First control: the panel applet's icon mode.
+    fn settings_sidebar(&self) -> Element<'_, Message> {
+        let header = widget::Row::new()
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .push(widget::icon::from_name("preferences-system-symbolic").size(18))
+            .push(widget::text::title4("Settings"))
+            .push(widget::space::horizontal())
+            .push(round_btn("window-close-symbolic", Message::ToggleSettings));
+
+        let choices = vec!["Single icon".to_string(), "Status cluster".to_string()];
+        let selected = match self.config.settings.applet_icons {
+            crate::config::AppletIcons::Single => 0,
+            crate::config::AppletIcons::Status => 1,
+        };
+        let applet_icons = widget::Column::new()
+            .spacing(6)
+            .push(widget::text::body("Panel applet icons"))
+            .push(
+                widget::text::caption(
+                    "A single control-center icon, or a cluster of live status icons \
+                     (Wi-Fi, audio, Bluetooth, …).",
+                )
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+            )
+            .push(widget::dropdown(choices, Some(selected), Message::SetAppletIcons));
+
+        let inner = widget::Column::new()
+            .spacing(16)
+            .push(header)
+            .push(widget::divider::horizontal::default())
+            .push(applet_icons);
+
+        widget::container(inner)
+            .width(Length::Fixed(260.0))
+            .height(Length::Fill)
+            .padding(16)
+            .class(theme::card(false, theme::accent()))
+            .into()
     }
 
     /// The editor's right sidebar: settings for the selected tile. Grows as
@@ -925,7 +976,16 @@ impl Hub {
             .push(
                 widget::scrollable(widget::container(list).padding([0, 12, 0, 0]))
                     .height(Length::Fill),
-            );
+            )
+            // App-wide settings, pinned at the bottom (the Fill scrollable above
+            // pushes it down).
+            .push(widget::divider::horizontal::default())
+            .push(sidebar_item(
+                "preferences-system-symbolic",
+                "Settings",
+                Message::ToggleSettings,
+                true,
+            ));
         widget::container(inner)
             .width(Length::Fixed(264.0))
             .height(Length::Fill)
@@ -943,6 +1003,7 @@ impl Hub {
                     if !self.edit {
                         self.palette_open = false;
                         self.config_open = None;
+                        self.settings_open = false;
                     }
                     self.bump_redraw();
                 }
@@ -993,6 +1054,23 @@ impl Hub {
             }
             Message::ToggleConfig(id) => {
                 self.config_open = if self.config_open == Some(id) { None } else { Some(id) };
+                // The two right-sidebar surfaces are mutually exclusive.
+                self.settings_open = false;
+                self.bump_redraw();
+            }
+            Message::ToggleSettings => {
+                self.settings_open = !self.settings_open;
+                if self.settings_open {
+                    self.config_open = None;
+                }
+                self.bump_redraw();
+            }
+            Message::SetAppletIcons(index) => {
+                self.config.settings.applet_icons = match index {
+                    1 => crate::config::AppletIcons::Status,
+                    _ => crate::config::AppletIcons::Single,
+                };
+                self.config.save();
                 self.bump_redraw();
             }
             Message::Expand(id) => {
