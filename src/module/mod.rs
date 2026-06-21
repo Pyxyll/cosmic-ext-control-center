@@ -186,6 +186,10 @@ pub trait Module {
         self.descriptor().icon.clone()
     }
 
+    /// Receive a desktop notification (routed by the hub from the always-on
+    /// monitor). Only the notification-center module collects them.
+    fn ingest_notification(&mut self, _n: crate::notifications::Notification) {}
+
     /// The user changed one of this module's controls. (Named `on_control`,
     /// not `apply`, to avoid colliding with the `Apply` trait that
     /// `cosmic::prelude` brings into scope as a blanket impl.)

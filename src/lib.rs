@@ -8,9 +8,11 @@ pub mod app;
 pub mod applet;
 pub mod config;
 pub mod module;
+pub mod notifications;
 pub mod plugins;
 pub mod status;
 pub mod theme;
+pub mod trigger;
 pub mod widgets;
 
 /// Prefer the Vulkan wgpu backend when a Vulkan driver is present, so the popup

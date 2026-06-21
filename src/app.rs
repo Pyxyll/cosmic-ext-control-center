@@ -120,10 +120,21 @@ pub enum Message {
     /// (applet) A status source (D-Bus / pactl) reported new system state for
     /// the panel status-icon cluster. Ignored by the editor.
     Status(crate::status::Update),
+    /// A desktop notification arrived (from the passive D-Bus monitor), routed
+    /// to the notification-center tile.
+    Notify(crate::notifications::Notification),
+    /// (applet) Toggle the popup from a panel click (a grabbing popup).
+    TogglePopup,
+    /// (applet) Toggle the popup from the external trigger (the global shortcut
+    /// via D-Bus) — opens a layer surface, which doesn't need an input serial.
+    ToggleSurface,
     /// (applet) Layer-shell surface plumbing for the panel popup.
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
     PopupClosed(cosmic::iced::window::Id),
+    /// (applet) A surface lost focus — used to dismiss the hotkey layer surface
+    /// when the user clicks away.
+    WindowUnfocused(cosmic::iced::window::Id),
     /// (applet) Activation-token subscription output, used to launch the editor
     /// with a Wayland activation token so it can raise its window.
     Token(cosmic::applet::token::subscription::TokenUpdate),
@@ -631,6 +642,14 @@ impl Hub {
         self.config.settings.cluster
     }
 
+    /// Whether a notification-center tile is placed, so the applet only runs the
+    /// notification monitor when something will display it.
+    pub fn has_notifications(&self) -> bool {
+        self.instances
+            .iter()
+            .any(|i| i.module.descriptor().id == "builtin.notifications")
+    }
+
     /// The tile grid. In edit mode it's a `ReorderableFlexRow` (drag to reorder)
     /// with a resize/remove control bar above each tile; otherwise a plain
     /// `flex_row` so the tiles' own controls stay interactive.
@@ -645,7 +664,7 @@ impl Hub {
                 // outside the card so it never overlaps the tile's own controls.
                 let has_options = !inst.module.option_choices().is_empty();
                 let mut actions = widget::Row::new()
-                    .spacing(6)
+                    .spacing(3)
                     .align_y(Alignment::Center)
                     .push(widget::space::horizontal());
                 // A gear (only when the module has an option) reveals the picker
@@ -660,11 +679,16 @@ impl Hub {
                         Message::ResizeInstance(inst.id),
                     ));
                 }
+                // A close (×), not a minus: this removes the tile, it doesn't
+                // shrink or collapse it.
                 actions = actions.push(round_btn(
-                    "list-remove-symbolic",
+                    "window-close-symbolic",
                     Message::RemoveInstance(inst.id),
                 ));
-                let bar = widget::container(actions).width(Length::Fixed(w)).padding([0, 6]);
+                // Tight horizontal padding so three action buttons (gear + resize
+                // + remove) still fit on a 1-col tile like the disk gauge without
+                // clipping the rightmost one.
+                let bar = widget::container(actions).width(Length::Fixed(w)).padding([0, 2]);
                 // Clip the body to the (animating) width so a tile growing in or
                 // shrinking out reveals/wipes cleanly instead of letting oversized
                 // children (e.g. album art) spill past the shrinking card.
@@ -799,7 +823,7 @@ impl Hub {
         }
         if self.edit {
             col = col.push(
-                widget::text::caption("Drag to rearrange · ⛶ resizes · − removes")
+                widget::text::caption("Drag to rearrange · ⛶ resizes · × removes")
                     .class(cosmic::style::Text::Custom(theme::dim_text)),
             );
             col = col.push(Self::grid_ruler());
@@ -823,7 +847,7 @@ impl Hub {
     /// modules, and the live grid as the arrangement canvas (always in edit
     /// mode). Reuses `grid()` — this is the same grid the applet renders.
     pub fn editor_view(&self) -> Element<'_, Message> {
-        let hint = widget::text::caption("Drag to rearrange · ⛶ resizes · − removes")
+        let hint = widget::text::caption("Drag to rearrange · ⛶ resizes · × removes")
             .class(cosmic::style::Text::Custom(theme::dim_text));
 
         // The grid is a fixed 4-column block; cap it with an inner container,
@@ -911,6 +935,26 @@ impl Hub {
             }
             inner = inner.push(toggles);
         }
+
+        // Global-shortcut stub (#34): the mechanism exists but isn't configurable
+        // from here yet, and a layer surface can't follow the applet's panel
+        // position (a COSMIC limitation). The disabled button marks it in
+        // progress; a button with no on_press renders disabled.
+        let shortcut = widget::Column::new()
+            .spacing(6)
+            .push(widget::text::body("Open with a shortcut"))
+            .push(
+                widget::text::caption(
+                    "Experimental, not configurable here yet. For now bind \
+                     \"cosmic-ext-control-center-applet --toggle\" in COSMIC \
+                     Settings > Keyboard.",
+                )
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+            )
+            .push(widget::button::standard("Set shortcut…"));
+        inner = inner
+            .push(widget::divider::horizontal::default())
+            .push(shortcut);
 
         widget::container(inner)
             .width(Length::Fixed(260.0))
@@ -1050,8 +1094,11 @@ impl Hub {
             // the editor; arms here keep the match exhaustive.
             Message::Surface(_)
             | Message::PopupClosed(_)
+            | Message::WindowUnfocused(_)
             | Message::Token(_)
-            | Message::Status(_) => {}
+            | Message::Status(_)
+            | Message::TogglePopup
+            | Message::ToggleSurface => {}
             Message::OpenPalette => {
                 self.palette_open = !self.palette_open;
                 self.bump_redraw();
@@ -1205,6 +1252,14 @@ impl Hub {
                     self.expand_loading = false;
                 }
             }
+            Message::Notify(n) => {
+                // Routed to whichever module collects notifications (only the
+                // notification center does); harmless no-op for the rest.
+                for inst in &mut self.instances {
+                    inst.module.ingest_notification(n.clone());
+                }
+                self.bump_redraw();
+            }
             Message::StateBatch(results) => {
                 // One poll's worth of results, applied together → a single repaint.
                 for (id, payload) in &results {
@@ -1326,12 +1381,12 @@ fn round_btn<'a>(icon: &str, msg: Message) -> Element<'a, Message> {
             s
         }
     };
-    // Don't fix the button to 24×24: that forces min=max=24 limits onto the
-    // content, and iced's `limits.resolve` clamps the icon's Fixed(size) UP to
-    // that 24px floor — so `.size()` was silently ignored. Instead shrink-wrap:
-    // the 24px circle = 10px glyph + 7px padding on every side (10 + 2·7 = 24).
-    widget::button::custom(widget::icon::from_name(icon).size(10))
-        .padding(7)
+    // `button::icon` is cosmic's standard icon button — it reliably centres the
+    // glyph (the manual `button::custom` layout did not). It renders the icon at
+    // a fixed 16px; padding 4 on every side makes a 24×24 square, so the rounded
+    // style (radius 12) is a true circle.
+    widget::button::icon(widget::icon::from_name(icon).size(16))
+        .padding(4)
         .class(cosmic::theme::Button::Custom {
             active: Box::new(style(0.16)),
             disabled: Box::new(move |t| style(0.10)(false, t)),

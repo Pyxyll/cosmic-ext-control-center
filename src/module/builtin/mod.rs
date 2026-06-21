@@ -6,9 +6,11 @@ mod airplane;
 mod appearance;
 pub(crate) mod bluetooth;
 mod divider;
+mod dnd;
 mod media;
 mod microphone;
 mod mpris;
+mod notifications;
 pub(crate) mod power_profile;
 mod sysmon;
 pub(crate) mod volume;
@@ -26,8 +28,10 @@ pub use airplane::AirplaneModule;
 pub use appearance::AppearanceModule;
 pub use bluetooth::BluetoothModule;
 pub use divider::DividerModule;
+pub use dnd::DndModule;
 pub use media::MediaModule;
 pub use microphone::MicrophoneModule;
+pub use notifications::NotificationsModule;
 pub use power_profile::PowerProfileModule;
 pub use sysmon::{CpuModule, DiskModule, GpuModule, RamModule, SysMonModule};
 pub use volume::VolumeModule;
@@ -46,6 +50,8 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
         BluetoothModule::new().descriptor().clone(),
         AirplaneModule::new().descriptor().clone(),
         AppearanceModule::new().descriptor().clone(),
+        DndModule::new().descriptor().clone(),
+        NotificationsModule::new().descriptor().clone(),
         DividerModule::new().descriptor().clone(),
         CpuModule::new().descriptor().clone(),
         GpuModule::new().descriptor().clone(),
@@ -74,7 +80,10 @@ pub fn category(id: &str) -> &'static str {
         "builtin.cpu" | "builtin.gpu" | "builtin.ram" | "builtin.disk" | "builtin.sysmon" => {
             "Monitors"
         }
-        "builtin.power_profile" | "builtin.appearance" => "System",
+        "builtin.power_profile"
+        | "builtin.appearance"
+        | "builtin.notifications"
+        | "builtin.do_not_disturb" => "System",
         "builtin.divider" => "Layout",
         _ => "Plugins",
     }
@@ -96,6 +105,8 @@ pub fn make(id: &str, params: &std::collections::BTreeMap<String, String>) -> Op
         "builtin.bluetooth" => Some(Box::new(BluetoothModule::new())),
         "builtin.airplane" => Some(Box::new(AirplaneModule::new())),
         "builtin.appearance" => Some(Box::new(AppearanceModule::new())),
+        "builtin.do_not_disturb" => Some(Box::new(DndModule::new())),
+        "builtin.notifications" => Some(Box::new(NotificationsModule::new())),
         "builtin.divider" => Some(Box::new(DividerModule::new())),
         "builtin.cpu" => Some(Box::new(CpuModule::new())),
         "builtin.gpu" => Some(Box::new(GpuModule::new())),
@@ -133,6 +144,42 @@ pub(crate) enum Chevron {
     Expand,
 }
 
+/// A full-region interactive overlay for a tile segment: transparent until
+/// hovered (so the card shows through), then a subtle highlight, with the outer
+/// corners (`round` = [top-left, top-right, bottom-right, bottom-left]) matched
+/// to the card radius so the highlight sits flush. As a button it also gives the
+/// pointer cursor — fixing the old `mouse_area` (no feedback) and the circular
+/// icon-button hover (#28).
+fn segment_class(round: [bool; 4]) -> cosmic::theme::Button {
+    let style = move |bg: f32| {
+        move |_focused: bool, t: &cosmic::Theme| {
+            let c = t.cosmic();
+            let fg: cosmic::iced::Color = c.background.on.into();
+            let r = c.corner_radii.radius_m[0];
+            let mut s = cosmic::widget::button::Style::new();
+            if bg > 0.0 {
+                s.background = Some(cosmic::iced::Background::Color(theme::alpha(fg, bg)));
+            }
+            s.border_radius = [
+                if round[0] { r } else { 0.0 },
+                if round[1] { r } else { 0.0 },
+                if round[2] { r } else { 0.0 },
+                if round[3] { r } else { 0.0 },
+            ]
+            .into();
+            s.icon_color = Some(fg);
+            s.text_color = Some(fg);
+            s
+        }
+    };
+    cosmic::theme::Button::Custom {
+        active: Box::new(style(0.0)),
+        disabled: Box::new(move |t| style(0.0)(false, t)),
+        hovered: Box::new(style(0.08)),
+        pressed: Box::new(style(0.14)),
+    }
+}
+
 /// GNOME-style quick-toggle pill: the whole left area toggles the module; an
 /// optional smaller right segment opens its settings or an inline list. The tile
 /// is tinted with the accent when on. Controls go inert in edit mode (so the
@@ -158,17 +205,19 @@ pub(crate) fn toggle_tile<'a>(
     // centered icon that toggles on tap (still tinted when on). Settings aren't
     // reachable here — that's the 2col+ layout.
     if cols_for_width(width) <= 1 {
-        let mut ma = widget::mouse_area(
+        let mut btn = widget::button::custom(
             widget::container(widget::icon::from_name(icon).size(26))
-                .width(Length::Fill)
-                .height(Length::Fill)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill),
-        );
+        )
+        .class(segment_class([true, true, true, true]))
+        .padding(0)
+        .width(Length::Fill)
+        .height(Length::Fill);
         if !edit {
-            ma = ma.on_press(Message::Control(id, "on".into(), ControlValue::Bool(!on)));
+            btn = btn.on_press(Message::Control(id, "on".into(), ControlValue::Bool(!on)));
         }
-        return widget::container(ma)
+        return widget::container(btn)
             .width(Length::Fixed(width))
             .height(Length::Fixed(H))
             .class(theme::card(on, accent))
@@ -185,12 +234,20 @@ pub(crate) fn toggle_tile<'a>(
                 .push(widget::text::body(label.to_string()))
                 .push(widget::text::caption(status.to_string())),
         );
-    let mut left = widget::mouse_area(
-        widget::container(info)
-            .width(Length::Fill)
-            .center_y(Length::Fill)
-            .padding([0, 14]),
-    );
+    // Round the left corners to match the card; keep the inner edge (against the
+    // chevron) square. With no chevron the toggle area is the whole tile.
+    let left_round = if chevron != Chevron::None {
+        [true, false, false, true]
+    } else {
+        [true, true, true, true]
+    };
+    let mut left = widget::button::custom(
+        widget::container(info).center_y(Length::Fill).padding([0, 14]),
+    )
+    .class(segment_class(left_round))
+    .padding(0)
+    .width(Length::Fill)
+    .height(Length::Fill);
     if !edit {
         left = left.on_press(Message::Control(id, "on".into(), ControlValue::Bool(!on)));
     }
@@ -216,8 +273,16 @@ pub(crate) fn toggle_tile<'a>(
         } else {
             "go-next-symbolic"
         };
-        let mut chev =
-            widget::button::icon(widget::icon::from_name(glyph).size(16)).padding(14);
+        // A full-height segment button (rounded right corners) so the hover
+        // covers the whole chevron area, not a circle.
+        let mut chev = widget::button::custom(
+            widget::container(widget::icon::from_name(glyph).size(16))
+                .center_y(Length::Fill)
+                .padding([0, 16]),
+        )
+        .class(segment_class([false, true, true, false]))
+        .padding(0)
+        .height(Length::Fill);
         if !edit {
             let msg = match chevron {
                 Chevron::Expand => Message::Expand(id),
