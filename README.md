@@ -8,7 +8,7 @@ layout in a popup, where the tiles are live and interactive. If a tile you want
 isn't built in, you can add one with a small RON plugin file that runs shell
 commands, without writing Rust or recompiling.
 
-Status: early preview (0.1.3). It works and is usable day to day, but it still
+Status: early preview (0.1.4). It works and is usable day to day, but it still
 has rough edges. See [Known issues](#known-issues).
 
 <p align="center">
@@ -30,8 +30,9 @@ editor window where you add, remove, reorder, and resize tiles from the palette.
 
 Volume, Microphone, Media (MPRIS), Wi-Fi (SSID and link rate), VPN, Bluetooth,
 Airplane mode, Power profile, Appearance (light/dark), CPU/GPU/RAM/Disk gauges,
-a combined system monitor, battery readout, section divider, and session/power
-actions (lock, sleep, log out, restart, shut down).
+a combined system monitor, battery readout, a notification center, Do Not
+Disturb, section divider, and session/power actions (lock, sleep, log out,
+restart, shut down).
 
 ## Install
 

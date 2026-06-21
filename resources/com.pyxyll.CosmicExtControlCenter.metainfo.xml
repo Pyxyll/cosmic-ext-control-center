@@ -71,6 +71,22 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.4" date="2026-06-20">
+      <description>
+        <ul>
+          <li>New notification center tile: live desktop notifications shown
+          inline, with dismiss, clear-all and a Do Not Disturb toggle, plus a
+          standalone Do Not Disturb module.</li>
+          <li>Quick-settings tiles now show a hover state across the whole
+          interactive area and a pointer cursor.</li>
+          <li>Edit-mode action buttons are centered, and the remove action uses a
+          close icon instead of a minus.</li>
+          <li>Experimental: a global shortcut can open the control center via
+          "cosmic-ext-control-center-applet --toggle".</li>
+        </ul>
+      </description>
+      <url>https://github.com/Pyxyll/cosmic-ext-control-center/releases/tag/v0.1.4</url>
+    </release>
     <release version="0.1.3" date="2026-06-19">
       <description>
         <p>Status icons and performance:</p>
