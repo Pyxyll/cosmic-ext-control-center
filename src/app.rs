@@ -120,6 +120,9 @@ pub enum Message {
     /// (applet) A status source (D-Bus / pactl) reported new system state for
     /// the panel status-icon cluster. Ignored by the editor.
     Status(crate::status::Update),
+    /// A desktop notification arrived (from the passive D-Bus monitor), routed
+    /// to the notification-center tile.
+    Notify(crate::notifications::Notification),
     /// (applet) Layer-shell surface plumbing for the panel popup.
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
@@ -629,6 +632,14 @@ impl Hub {
     /// Which indicators the status cluster should show.
     pub fn cluster_icons(&self) -> crate::config::ClusterIcons {
         self.config.settings.cluster
+    }
+
+    /// Whether a notification-center tile is placed, so the applet only runs the
+    /// notification monitor when something will display it.
+    pub fn has_notifications(&self) -> bool {
+        self.instances
+            .iter()
+            .any(|i| i.module.descriptor().id == "builtin.notifications")
     }
 
     /// The tile grid. In edit mode it's a `ReorderableFlexRow` (drag to reorder)
@@ -1209,6 +1220,14 @@ impl Hub {
                 if self.expanded == Some(id) {
                     self.expand_loading = false;
                 }
+            }
+            Message::Notify(n) => {
+                // Routed to whichever module collects notifications (only the
+                // notification center does); harmless no-op for the rest.
+                for inst in &mut self.instances {
+                    inst.module.ingest_notification(n.clone());
+                }
+                self.bump_redraw();
             }
             Message::StateBatch(results) => {
                 // One poll's worth of results, applied together → a single repaint.

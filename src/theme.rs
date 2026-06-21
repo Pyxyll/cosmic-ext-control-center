@@ -94,6 +94,25 @@ pub fn glass() -> theme::Container<'static> {
     })
 }
 
+/// A subtle inset surface (a faint fill, gently rounded) for nested list items
+/// such as the notification-center cards, so they read as distinct rows inside
+/// a drawer without a heavy border.
+pub fn inset() -> theme::Container<'static> {
+    theme::Container::custom(|t| {
+        let c = t.cosmic();
+        let fg: Color = c.background.on.into();
+        container::Style {
+            background: Some(Background::Color(alpha(fg, 0.05))),
+            border: Border {
+                radius: c.corner_radii.radius_s.into(),
+                ..Default::default()
+            },
+            text_color: Some(fg),
+            ..Default::default()
+        }
+    })
+}
+
 /// A solid, slightly-raised card for control-center tiles.
 pub fn card(active: bool, tint: Color) -> theme::Container<'static> {
     theme::Container::custom(move |t| {

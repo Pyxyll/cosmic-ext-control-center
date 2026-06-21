@@ -80,6 +80,11 @@ impl cosmic::Application for Applet {
         if matches!(self.hub.applet_icons(), AppletIcons::Status) {
             subs.push(crate::status::subscription(self.hub.cluster_icons()));
         }
+        // The notification monitor runs whenever a notifications tile is placed,
+        // so the list is current the moment the popup opens (not just while open).
+        if self.hub.has_notifications() {
+            subs.push(crate::notifications::subscription());
+        }
         if self.popup.is_some() {
             subs.push(self.hub.subscription());
         }

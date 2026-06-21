@@ -6,9 +6,11 @@ mod airplane;
 mod appearance;
 pub(crate) mod bluetooth;
 mod divider;
+mod dnd;
 mod media;
 mod microphone;
 mod mpris;
+mod notifications;
 pub(crate) mod power_profile;
 mod sysmon;
 pub(crate) mod volume;
@@ -26,8 +28,10 @@ pub use airplane::AirplaneModule;
 pub use appearance::AppearanceModule;
 pub use bluetooth::BluetoothModule;
 pub use divider::DividerModule;
+pub use dnd::DndModule;
 pub use media::MediaModule;
 pub use microphone::MicrophoneModule;
+pub use notifications::NotificationsModule;
 pub use power_profile::PowerProfileModule;
 pub use sysmon::{CpuModule, DiskModule, GpuModule, RamModule, SysMonModule};
 pub use volume::VolumeModule;
@@ -46,6 +50,8 @@ pub fn descriptors() -> Vec<ModuleDescriptor> {
         BluetoothModule::new().descriptor().clone(),
         AirplaneModule::new().descriptor().clone(),
         AppearanceModule::new().descriptor().clone(),
+        DndModule::new().descriptor().clone(),
+        NotificationsModule::new().descriptor().clone(),
         DividerModule::new().descriptor().clone(),
         CpuModule::new().descriptor().clone(),
         GpuModule::new().descriptor().clone(),
@@ -74,7 +80,10 @@ pub fn category(id: &str) -> &'static str {
         "builtin.cpu" | "builtin.gpu" | "builtin.ram" | "builtin.disk" | "builtin.sysmon" => {
             "Monitors"
         }
-        "builtin.power_profile" | "builtin.appearance" => "System",
+        "builtin.power_profile"
+        | "builtin.appearance"
+        | "builtin.notifications"
+        | "builtin.do_not_disturb" => "System",
         "builtin.divider" => "Layout",
         _ => "Plugins",
     }
@@ -96,6 +105,8 @@ pub fn make(id: &str, params: &std::collections::BTreeMap<String, String>) -> Op
         "builtin.bluetooth" => Some(Box::new(BluetoothModule::new())),
         "builtin.airplane" => Some(Box::new(AirplaneModule::new())),
         "builtin.appearance" => Some(Box::new(AppearanceModule::new())),
+        "builtin.do_not_disturb" => Some(Box::new(DndModule::new())),
+        "builtin.notifications" => Some(Box::new(NotificationsModule::new())),
         "builtin.divider" => Some(Box::new(DividerModule::new())),
         "builtin.cpu" => Some(Box::new(CpuModule::new())),
         "builtin.gpu" => Some(Box::new(GpuModule::new())),
