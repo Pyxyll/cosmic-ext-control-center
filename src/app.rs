@@ -936,6 +936,26 @@ impl Hub {
             inner = inner.push(toggles);
         }
 
+        // Global-shortcut stub (#34): the mechanism exists but isn't configurable
+        // from here yet, and a layer surface can't follow the applet's panel
+        // position (a COSMIC limitation). The disabled button marks it in
+        // progress; a button with no on_press renders disabled.
+        let shortcut = widget::Column::new()
+            .spacing(6)
+            .push(widget::text::body("Open with a shortcut"))
+            .push(
+                widget::text::caption(
+                    "Experimental, not configurable here yet. For now bind \
+                     \"cosmic-ext-control-center-applet --toggle\" in COSMIC \
+                     Settings > Keyboard.",
+                )
+                .class(cosmic::style::Text::Custom(theme::dim_text)),
+            )
+            .push(widget::button::standard("Set shortcut…"));
+        inner = inner
+            .push(widget::divider::horizontal::default())
+            .push(shortcut);
+
         widget::container(inner)
             .width(Length::Fixed(260.0))
             .height(Length::Fill)
