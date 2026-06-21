@@ -123,10 +123,18 @@ pub enum Message {
     /// A desktop notification arrived (from the passive D-Bus monitor), routed
     /// to the notification-center tile.
     Notify(crate::notifications::Notification),
+    /// (applet) Toggle the popup from a panel click (a grabbing popup).
+    TogglePopup,
+    /// (applet) Toggle the popup from the external trigger (the global shortcut
+    /// via D-Bus) — opens a layer surface, which doesn't need an input serial.
+    ToggleSurface,
     /// (applet) Layer-shell surface plumbing for the panel popup.
     Surface(cosmic::surface::Action),
     /// (applet) The popup window was closed.
     PopupClosed(cosmic::iced::window::Id),
+    /// (applet) A surface lost focus — used to dismiss the hotkey layer surface
+    /// when the user clicks away.
+    WindowUnfocused(cosmic::iced::window::Id),
     /// (applet) Activation-token subscription output, used to launch the editor
     /// with a Wayland activation token so it can raise its window.
     Token(cosmic::applet::token::subscription::TokenUpdate),
@@ -1066,8 +1074,11 @@ impl Hub {
             // the editor; arms here keep the match exhaustive.
             Message::Surface(_)
             | Message::PopupClosed(_)
+            | Message::WindowUnfocused(_)
             | Message::Token(_)
-            | Message::Status(_) => {}
+            | Message::Status(_)
+            | Message::TogglePopup
+            | Message::ToggleSurface => {}
             Message::OpenPalette => {
                 self.palette_open = !self.palette_open;
                 self.bump_redraw();
