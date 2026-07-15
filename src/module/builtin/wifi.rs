@@ -57,23 +57,63 @@ fn fetch(want_entries: bool, rescan: bool) -> WifiData {
         d.on = o.trim() == "enabled";
         d.available = true;
     }
-    // Active SSID, if connected: the "yes:<ssid>" line.
-    d.ssid = super::out("nmcli -t -f active,ssid dev wifi").and_then(|o| {
-        o.lines()
-            .find_map(|l| l.strip_prefix("yes:").map(str::to_string))
-            .filter(|s| !s.is_empty())
-    });
-    // Link rate of the active AP (queried separately from the SSID so an SSID
-    // containing ':' can't break field parsing).
-    d.rate = super::out("nmcli -t -f active,rate dev wifi")
-        .and_then(|o| o.lines().find_map(|l| l.strip_prefix("yes:").and_then(parse_rate)));
-    // Signal of the active AP (numeric, so no SSID-colon hazard) for the icon.
-    d.signal = super::out("nmcli -t -f active,signal dev wifi")
-        .and_then(|o| o.lines().find_map(|l| l.strip_prefix("yes:").and_then(|s| s.trim().parse().ok())));
+    // Connected SSID from the device's own state, not the scan list. The
+    // `dev wifi` ACTIVE flag is derived from scan results and can miss the
+    // associated AP (after resume, some drivers, hidden SSIDs), which made the
+    // tile read "Not connected" while NM was actually connected (issue #35).
+    d.ssid = connected_ssid();
+    // Signal/rate live only in the AP list, so read them there — matching the
+    // ACTIVE row, then falling back to an SSID match so a missing ACTIVE flag
+    // doesn't also drop the link details for a connection we know is up.
+    let (signal, rate) = active_ap_metrics(d.ssid.as_deref());
+    d.signal = signal;
+    d.rate = rate;
     if want_entries {
         d.nets = scan_networks(rescan);
     }
     d
+}
+
+/// The SSID the Wi-Fi device is connected to, read from device state rather than
+/// the scan list so association is detected reliably. This is NetworkManager's
+/// connection-profile name, which is the SSID for normal networks. Returns None
+/// when no wifi device is in the `connected` state.
+fn connected_ssid() -> Option<String> {
+    let o = super::out("nmcli -t -f TYPE,STATE,CONNECTION device status")?;
+    o.lines().find_map(|l| {
+        // CONNECTION is last and may contain ':', so split into at most 3.
+        let mut it = l.splitn(3, ':');
+        let ty = it.next()?;
+        let state = it.next()?;
+        let conn = it.next().unwrap_or("").trim();
+        (ty == "wifi" && state == "connected" && !conn.is_empty()).then(|| conn.to_string())
+    })
+}
+
+/// Signal (0-100) and negotiated rate (Mb/s) for the connected AP, pulled from
+/// the scan list. Prefers the ACTIVE=yes row; if the flag is absent, falls back
+/// to the row whose SSID matches `ssid`. Returns `(signal, rate)`.
+fn active_ap_metrics(ssid: Option<&str>) -> (Option<u32>, Option<u32>) {
+    let Some(o) = super::out("nmcli -t -f active,signal,rate,ssid dev wifi") else {
+        return (None, None);
+    };
+    let mut by_active = None;
+    let mut by_ssid = None;
+    for l in o.lines() {
+        // SSID is last (may contain ':'); the three fields before it don't.
+        let mut it = l.splitn(4, ':');
+        let active = it.next() == Some("yes");
+        let signal = it.next().and_then(|s| s.trim().parse::<u32>().ok());
+        let rate = it.next().and_then(parse_rate);
+        let row_ssid = it.next().unwrap_or("").trim();
+        if active {
+            by_active = Some((signal, rate));
+        }
+        if by_ssid.is_none() && ssid.is_some_and(|s| s == row_ssid) {
+            by_ssid = Some((signal, rate));
+        }
+    }
+    by_active.or(by_ssid).unwrap_or((None, None))
 }
 
 /// Available networks via `nmcli`, strongest-signal-per-SSID, active first.
