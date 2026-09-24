@@ -5,6 +5,7 @@
 > here works, but the things listed as planned below (D-Bus and HTTP plugin
 > actions, native-looking plugin tiles, per-module layout polish) are not coming
 > from me. If you'd like to take the project over, open an issue and it's yours.
+> Check out [THIS](https://github.com/jjnuthuagen/cosmic-control-center-applet) for a replacement.
 
 A modular control center for the [COSMIC](https://system76.com/cosmic) desktop.
 
